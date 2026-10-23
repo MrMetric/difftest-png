@@ -9,9 +9,9 @@ The published run is at <https://wizardmaxx.ing/difftest-png/>.
 
 ## Human disclaimer
 
-The results likely contain errors, or decisions which can be argued with. Regardless, I did take greater-than-usual care to make this meaningful. The code is probably vibeslop, and I haven't read a single line. But, the decisions here came from several rounds of Matt Pocock's grill-me skill and at least four separate essays I wrote while trying to keep Claude Opus 5.5 on track, alongside several rounds of adversarial checking from GPT-6 Astra and from Claude Fable 5.1. I had to "push back" quite a lot to get past the AI's boneheaded decisions.
+The results likely contain errors, or decisions which can be argued with. Regardless, I did take greater-than-usual care to make this meaningful. The code is probably vibeslop, and I haven't read a single line. But, the decisions here came from several rounds of [Matt Pocock's grill-me Skill](https://github.com/mattpocock/skills) and at least four separate essays I wrote while trying to keep Claude Opus 5.5 on track, alongside several rounds of adversarial checking from GPT-6 Astra and from Claude Fable 5.1. I had to "push back" quite a lot to get past the AI's boneheaded decisions.
 
-My conclusion: Parsing PNGs is a Minefield.
+My conclusion: [Parsing PNGs is a Minefield](https://seriot.ch/security/parsing_json.html). A modern JSON comparison is coming Soon™, don't worry :)
 
 ## Run it
 
