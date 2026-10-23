@@ -12,6 +12,7 @@ from pathlib import Path
 import minify_html
 
 REPO = "https://github.com/MrMetric/difftest-png"
+README = Path(__file__).with_name("README.md")
 # glyph per outcome; colour comes from severity
 GLYPH = {"pixels": "✓", "reject": "R", "wrong": "≠", "accept": "A", "crash": "☠", "memory": "M",
 	"timeout": "⧗", "oom": "∞", "shim": "S"}
@@ -94,6 +95,16 @@ def allowed_text(test: dict) -> str:
 	return "; ".join(parts)
 
 
+def disclaimer() -> str:
+	"""The README's "Human disclaimer" section, verbatim, one <p> per paragraph; the README is its only copy."""
+	head = "\n## Human disclaimer\n\n"
+	text = README.read_text(encoding="utf-8")
+	assert text.count(head) == 1, f"{README} must have exactly one '## Human disclaimer' section"
+	paras = text.split(head, 1)[1].split("\n## ", 1)[0].strip().split("\n\n")
+	assert not any(c in p for p in paras for c in "*`[<"), "the disclaimer is shown as plain text; Markdown in it would show raw"
+	return "<h2>Human disclaimer</h2>" + "".join(f"<p>{esc(p)}</p>" for p in paras)
+
+
 def render(report: dict) -> str:
 	groups = column_groups(report)
 	tests = report["tests"]
@@ -108,6 +119,7 @@ def render(report: dict) -> str:
 	if report["problems"]:
 		out.append("<p class=must>Suite consistency problems in this run:</p><ul>" + "".join(f"<li>{esc(p)}" for p in report["problems"]) + "</ul>")
 
+	out.append(disclaimer())
 	out.append("<h2>Summary</h2><table class=s><tr>" + "".join(f"<th>{h}</th>" for h in ("implementation", "version", "lineage", "must", "should", "edition", "alpha-0 colour", "16→8")) + "</tr>")
 	for g in groups:
 		s = g[0]["summary"]
