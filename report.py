@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import minify_html
+from markdown_it import MarkdownIt
 
 REPO = "https://github.com/MrMetric/difftest-png"
 README = Path(__file__).with_name("README.md")
@@ -96,13 +97,13 @@ def allowed_text(test: dict) -> str:
 
 
 def disclaimer() -> str:
-	"""The README's "Human disclaimer" section, verbatim, one <p> per paragraph; the README is its only copy."""
+	"""The README's "Human disclaimer" section, verbatim, rendered as CommonMark; the README is its only copy."""
 	head = "\n## Human disclaimer\n\n"
 	text = README.read_text(encoding="utf-8")
 	assert text.count(head) == 1, f"{README} must have exactly one '## Human disclaimer' section"
-	paras = text.split(head, 1)[1].split("\n## ", 1)[0].strip().split("\n\n")
-	assert not any(c in p for p in paras for c in "*`[<"), "the disclaimer is shown as plain text; Markdown in it would show raw"
-	return "<h2>Human disclaimer</h2>" + "".join(f"<p>{esc(p)}</p>" for p in paras)
+	body = text.split(head, 1)[1].split("\n## ", 1)[0].strip()
+	assert body, f"{README}: the '## Human disclaimer' section is empty"
+	return "<h2>Human disclaimer</h2>" + MarkdownIt("commonmark").render(body)
 
 
 def render(report: dict) -> str:

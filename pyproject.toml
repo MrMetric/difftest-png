@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "PNG implementation conformance suite and differential comparison"
 requires-python = ">=3.14"
 dependencies = [
+	"markdown-it-py==4.2.0",
 	"minify-html==0.18.1",
 	"numpy>=2",
 	"pillow==13.0.0",
