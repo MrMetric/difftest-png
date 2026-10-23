@@ -85,6 +85,7 @@ skipped when it does not hold them. A script to clone and build them is not writ
 
 ## Layout
 
+- `DECISIONS.md` every design decision behind the suite and the report, and why
 - `run.py` runs the suite and writes the report; `execute.py` runs one implementation on one
   file; `pam.py` reads their output; `report.py` renders the HTML
 - `refpng.py`, `pngfields.py`, `pngdiagnostics.py`, `inflate.py` the reference decoder;
