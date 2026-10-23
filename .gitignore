@@ -1,0 +1,9 @@
+out/
+.venv/
+__pycache__/
+impls/*/shim
+impls/*/target/
+impls/imagesharp/bin/
+impls/imagesharp/obj/
+impls/java/*.class
+impls/node/node_modules/

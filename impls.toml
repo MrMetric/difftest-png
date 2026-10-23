@@ -1,0 +1,659 @@
+# One table per implementation column. `cmd` runs with {input} = PNG path and {output} = where to
+# write a PAM (see impls/CONTRACT.md). Placeholders: {python} = this project's interpreter,
+# {head} = the directory holding upstream HEAD builds (run.py --head). Repo-relative program
+# paths are resolved against the repo root. A column whose program is missing is skipped.
+#
+# project   groups the variants of one implementation (release, HEAD, branches)
+# variant   "release" (a published version) or "HEAD" (a development revision)
+# lineage   the code base a column's PNG decoding comes from
+# memcheck  run under valgrind memcheck in the memory pass (native code only)
+
+[reference-ed3]
+project = "reference"
+variant = "3rd edition"
+lineage = "this project"
+notes = "refpng.py: this project's reference decoder, every check named by its clause; third edition."
+cmd = ["{python}", "refpng.py", "--edition", "3", "{input}", "{output}"]
+version = ["{python}", "refpng.py", "--version"]
+timeout_s = 120
+
+[reference-ed2]
+project = "reference"
+variant = "2nd edition"
+lineage = "this project"
+notes = "refpng.py: this project's reference decoder; second edition (ISO/IEC 15948:2003)."
+cmd = ["{python}", "refpng.py", "--edition", "2", "{input}", "{output}"]
+version = ["{python}", "refpng.py", "--version"]
+timeout_s = 120
+
+[libpng]
+project = "libpng"
+variant = "release"
+lineage = "libpng"
+notes = "libpng low-level API, png_set_expand only, defaults otherwise"
+cmd = ["impls/libpng/shim", "{input}", "{output}"]
+version = ["impls/libpng/shim", "--version"]
+build = ["make", "-s", "-C", "impls/libpng"]
+memcheck = true
+
+[stb_image]
+project = "stb_image"
+variant = "release"
+lineage = "stb"
+notes = "single-header, ignores CRCs, de-iPhones CgBI"
+cmd = ["impls/stb/shim", "{input}", "{output}"]
+version = ["impls/stb/shim", "--version"]
+build = ["make", "-s", "-C", "impls/stb"]
+memcheck = true
+
+[rust-png]
+project = "rust-png"
+variant = "release"
+lineage = "image-rs"
+notes = "png crate, Transformations::EXPAND, default limits. The shim allocates the output buffer with try_reserve so an impossible size is reported as out of memory; the documented `vec![0; reader.output_buffer_size()]` aborts the process instead."
+cmd = ["impls/rust-png/target/release/rust-png-shim", "{input}", "{output}"]
+version = ["cargo", "pkgid", "--manifest-path", "impls/rust-png/Cargo.toml", "png"]
+build = ["cargo", "build", "--release", "--quiet", "--manifest-path", "impls/rust-png/Cargo.toml"]
+memcheck = true
+
+[ffmpeg]
+project = "ffmpeg"
+variant = "release"
+lineage = "ffmpeg"
+notes = "ffmpeg's own pngdec via the CLI, first frame, PAM muxer. Output pinned to rgba|rgba64be: left to itself the CLI negotiates pal8-with-alpha to rgb24 and drops the alpha, and swscale's 8->16 is not x*257, so neither auto nor forced-16 is faithful."
+cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-v", "warning", "-i", "{input}", "-vf", "format=rgba|rgba64be", "-frames:v", "1", "-update", "1", "-f", "image2", "-c:v", "pam", "-y", "{output}"]
+version = ["ffmpeg", "-version"]
+mem_mb = 4096
+memcheck = true
+
+[imagemagick]
+project = "imagemagick"
+variant = "release"
+lineage = "libpng"
+notes = "ImageMagick PNG coder on top of libpng; first frame. -depth 16 because IM tags palette images with the index bit depth and its PAM writer quantizes samples to that depth."
+cmd = ["magick", "{input}[0]", "-depth", "16", "pam:{output}"]
+version = ["magick", "-version"]
+mem_mb = 4096
+memcheck = true
+
+[pngcheck]
+project = "pngcheck"
+variant = "release"
+lineage = "pngcheck"
+notes = "structural validator, verdict only"
+pixels = false
+cmd = ["pngcheck", "-v", "{input}"]
+version = ["pngcheck", "-h"]
+memcheck = true
+
+[lodepng]
+project = "lodepng"
+variant = "release"
+lineage = "lodepng"
+notes = "single-file C/C++ decoder; RGBA at source depth; CRC and Adler-32 checks on by default"
+cmd = ["impls/lodepng/shim", "{input}", "{output}"]
+version = ["impls/lodepng/shim", "--version"]
+build = ["make", "-s", "-C", "impls/lodepng"]
+memcheck = true
+
+[libspng]
+project = "libspng"
+variant = "release"
+lineage = "libspng"
+notes = "system libspng; SPNG_FMT_RGBA8/16 with SPNG_DECODE_TRNS"
+cmd = ["impls/spng/shim", "{input}", "{output}"]
+version = ["impls/spng/shim", "--version"]
+build = ["make", "-s", "-C", "impls/spng"]
+memcheck = true
+
+[wuffs]
+project = "wuffs"
+variant = "release"
+lineage = "wuffs"
+notes = "wuffs_aux::DecodeImage with default quirks and limits; non-premultiplied RGBA at source depth"
+cmd = ["impls/wuffs/shim", "{input}", "{output}"]
+version = ["impls/wuffs/shim", "--version"]
+build = ["make", "-s", "-C", "impls/wuffs"]
+memcheck = true
+
+[zune-png]
+project = "zune-png"
+variant = "release"
+lineage = "zune"
+notes = "zune-png crate, default DecoderOptions"
+cmd = ["impls/zune-png/target/release/zune-png-shim", "{input}", "{output}"]
+version = ["cargo", "pkgid", "--manifest-path", "impls/zune-png/Cargo.toml", "zune-png"]
+build = ["cargo", "build", "--release", "--quiet", "--manifest-path", "impls/zune-png/Cargo.toml"]
+memcheck = true
+
+[go-png]
+project = "go-png"
+variant = "release"
+lineage = "go"
+notes = "Go standard library image/png; the returned image type is written in its native layout"
+cmd = ["impls/go-png/shim", "{input}", "{output}"]
+version = ["impls/go-png/shim", "--version"]
+build = ["impls/go-png/build.sh", "build", "-o", "shim", "."]
+
+[java-imageio]
+project = "java-imageio"
+variant = "release"
+lineage = "java"
+notes = "OpenJDK ImageIO PNG reader; raster written in native band order and sample size"
+cmd = ["java", "-Xmx1g", "-Xss512k", "-XX:+UseSerialGC", "-XX:MaxMetaspaceSize=128m", "-XX:ReservedCodeCacheSize=32m", "-XX:CompressedClassSpaceSize=64m", "-XX:TieredStopAtLevel=1", "-cp", "impls/java", "ImageIOShim", "{input}", "{output}"]
+version = ["java", "-cp", "impls/java", "ImageIOShim", "--version"]
+creates = "impls/java/ImageIOShim.class"
+build = ["javac", "-d", "impls/java", "impls/java/ImageIOShim.java"]
+mem_mb = 4096
+timeout_s = 60
+
+[imagesharp]
+project = "imagesharp"
+variant = "release"
+lineage = "imagesharp"
+notes = "SixLabors.ImageSharp on .NET; Rgba32 or Rgba64 chosen from the IHDR depth"
+cmd = ["impls/imagesharp/bin/publish/ImageSharpShim", "{input}", "{output}"]
+version = ["impls/imagesharp/bin/publish/ImageSharpShim", "--version"]
+build = ["dotnet", "publish", "impls/imagesharp", "-c", "Release", "-o", "impls/imagesharp/bin/publish", "-v", "q", "--nologo"]
+# EnableWriteXorExecute=0: the runtime's W^X double mapping ftruncates a 2 GiB memfd, which trips RLIMIT_FSIZE.
+env = { DOTNET_GCHeapHardLimit = "0x40000000", DOTNET_TieredPGO = "0", DOTNET_EnableWriteXorExecute = "0", DOTNET_CLI_TELEMETRY_OPTOUT = "1", DOTNET_NOLOGO = "1" }
+mem_mb = 8192
+timeout_s = 60
+
+[fast-png]
+project = "fast-png"
+variant = "release"
+lineage = "fast-png"
+notes = "image-js fast-png (JavaScript). fast-png returns greyscale/RGB tRNS to the caller instead of applying it; the shim applies it as a conforming caller would (masked to the bit depth), so tRNS results for those colour types measure the shim's use of the interface."
+cmd = ["node", "impls/node/fast-png.mjs", "{input}", "{output}"]
+version = ["node", "impls/node/fast-png.mjs", "--version"]
+creates = "impls/node/node_modules"
+build = ["npm", "ci", "--silent", "--prefix", "impls/node"]
+
+[pngjs]
+project = "pngjs"
+variant = "release"
+lineage = "pngjs"
+notes = "pngjs sync API with skipRescale; always RGBA"
+cmd = ["node", "impls/node/pngjs.mjs", "{input}", "{output}"]
+version = ["node", "impls/node/pngjs.mjs", "--version"]
+creates = "impls/node/node_modules"
+build = ["npm", "ci", "--silent", "--prefix", "impls/node"]
+
+[upng]
+project = "upng"
+variant = "release"
+lineage = "upng"
+notes = "UPNG.js decode + toRGBA8, first frame; 8-bit only"
+cmd = ["node", "impls/node/upng.mjs", "{input}", "{output}"]
+version = ["node", "impls/node/upng.mjs", "--version"]
+creates = "impls/node/node_modules"
+build = ["npm", "ci", "--silent", "--prefix", "impls/node"]
+max_depth = 8
+
+[pillow]
+project = "pillow"
+variant = "release"
+lineage = "pillow"
+notes = "Pillow's own PNG plugin (zlib, not libpng); convert('RGBA') for modes up to 8 bits, 16-bit grey kept; Pillow reads 16-bit RGB(A) as 8-bit"
+cmd = ["{python}", "impls/pillow_shim.py", "{input}", "{output}"]
+version = ["{python}", "impls/pillow_shim.py", "--version"]
+max_depth = 8
+
+[pypng]
+project = "pypng"
+variant = "release"
+lineage = "pypng"
+notes = "pure-Python pypng Reader.asRGBA(); honours sBIT by rescaling"
+cmd = ["{python}", "impls/pypng_shim.py", "{input}", "{output}"]
+version = ["{python}", "impls/pypng_shim.py", "--version"]
+timeout_s = 120
+
+[opencv]
+project = "opencv"
+variant = "release"
+lineage = "libpng"
+notes = "OpenCV imread IMREAD_UNCHANGED over its bundled libpng (uv sync --extra opencv). Thread pools capped: with 32 threads of OpenBLAS/OpenMP buffers it segfaults under a 4 GiB address-space limit."
+cmd = ["{python}", "impls/opencv_shim.py", "{input}", "{output}"]
+version = ["{python}", "impls/opencv_shim.py", "--version"]
+env = { OPENBLAS_NUM_THREADS = "1", OMP_NUM_THREADS = "1", OPENCV_FOR_THREADS_NUM = "1" }
+mem_mb = 8192
+
+[chunky_png]
+project = "chunky_png"
+variant = "release"
+lineage = "chunky_png"
+notes = "pure-Ruby ChunkyPNG; 8-bit RGBA only"
+cmd = ["ruby", "impls/ruby/chunky_png_shim.rb", "{input}", "{output}"]
+version = ["ruby", "impls/ruby/chunky_png_shim.rb", "--version"]
+max_depth = 8
+timeout_s = 120
+
+[pngtopam]
+project = "pngtopam"
+variant = "release"
+lineage = "libpng"
+notes = "netpbm pngtopam -alphapam: libpng with netpbm's policies"
+cmd = ["sh", "-c", "exec pngtopam -alphapam \"$1\" > \"$2\"", "pngtopam", "{input}", "{output}"]
+version = ["pngtopam", "--version"]
+memcheck = true
+
+[graphicsmagick]
+project = "graphicsmagick"
+variant = "release"
+lineage = "libpng"
+notes = "GraphicsMagick PNG coder over libpng; -depth 16 for the same reason as ImageMagick"
+cmd = ["gm", "convert", "{input}[0]", "-depth", "16", "pam:{output}"]
+version = ["gm", "version"]
+mem_mb = 4096
+memcheck = true
+
+# HEAD columns: each upstream's development revision, built from the clones under {head}.
+# Every `build` runs from the repo root and writes only under {head}/difftest/<column>/.
+# Builds that fetch from the network: cargo, uv, dotnet, and imagesharp-head's SharedInfrastructure submodule.
+
+[libpng16-head]
+project = "libpng"
+variant = "HEAD"
+revision = "8c2a5fb 2026-10-21"
+lineage = "libpng"
+notes = "libpng low-level API, png_set_expand only, defaults otherwise. libpng16 branch (1.6.60.git), built static with the clone's CMake (defaults, hardware optimizations on) and linked into the shim."
+cmd = ["{head}/difftest/libpng16-head/shim", "{input}", "{output}"]
+version = ["{head}/difftest/libpng16-head/shim", "--version"]
+build = ["sh", "-ec", '''
+d={head}/difftest/libpng16-head
+rm -rf $d/build
+cmake -S {head}/ctools/libpng16 -B $d/build -DCMAKE_BUILD_TYPE=Release -DPNG_SHARED=OFF -DPNG_STATIC=ON -DPNG_TESTS=OFF -DPNG_TOOLS=OFF -DPNG_EXECUTABLES=OFF > /dev/null
+cmake --build $d/build -j > /dev/null
+cc -O2 -Wall -Wextra -I{head}/ctools/libpng16 -I$d/build -o $d/shim impls/libpng/shim.c $d/build/libpng16.a -lz -lm
+''']
+memcheck = true
+
+[libpng18-head]
+project = "libpng"
+variant = "HEAD"
+revision = "682e5fe 2026-10-21"
+lineage = "libpng"
+notes = "libpng low-level API, png_set_expand only, defaults otherwise. libpng18 branch (1.8.0.git, the repository's default branch), built static with the clone's CMake (defaults, hardware optimizations on) and linked into the shim."
+cmd = ["{head}/difftest/libpng18-head/shim", "{input}", "{output}"]
+version = ["{head}/difftest/libpng18-head/shim", "--version"]
+build = ["sh", "-ec", '''
+d={head}/difftest/libpng18-head
+rm -rf $d/build
+cmake -S {head}/ctools/libpng -B $d/build -DCMAKE_BUILD_TYPE=Release -DPNG_SHARED=OFF -DPNG_STATIC=ON -DPNG_TESTS=OFF -DPNG_TOOLS=OFF -DPNG_EXECUTABLES=OFF > /dev/null
+cmake --build $d/build -j > /dev/null
+cc -O2 -Wall -Wextra -I{head}/ctools/libpng -I$d/build -o $d/shim impls/libpng/shim.c $d/build/libpng18.a -lz -lm
+''']
+memcheck = true
+
+[stb_image-head]
+project = "stb_image"
+variant = "HEAD"
+revision = "a7d4c21 2026-10-19"
+lineage = "stb"
+notes = "single-header, ignores CRCs, de-iPhones CgBI. stb_image.h at this revision is byte-identical to the vendored impls/stb/stb_image.h (v2.30). The shim source is copied into the column directory so its quoted #include \"stb_image.h\" resolves through -I to the clone's header, not the vendored copy beside impls/stb/shim.c."
+cmd = ["{head}/difftest/stb_image-head/shim", "{input}", "{output}"]
+version = ["{head}/difftest/stb_image-head/shim", "--version"]
+build = ["sh", "-ec", '''
+d={head}/difftest/stb_image-head
+mkdir -p $d
+cp impls/stb/shim.c $d/shim.c
+v=$(grep -m1 -oE 'stb_image - v[0-9.]+' {head}/clibs/stb/stb_image.h | sed 's/stb_image - //')
+cc -O2 -Wall -Wextra -Wno-unused-function -I{head}/clibs/stb -DSTB_VER="\"$v\"" -o $d/shim $d/shim.c -lm
+''']
+memcheck = true
+
+[rust-png-head]
+project = "rust-png"
+variant = "HEAD"
+revision = "b2f10c6 2026-09-23"
+lineage = "image-rs"
+notes = "png crate, Transformations::EXPAND, default limits. The shim crate patches crates.io png 0.18.1 with the master clone (path dependency); other dependencies from crates.io."
+cmd = ["{head}/difftest/rust-png-head/target/release/rust-png-shim", "{input}", "{output}"]
+version = ["cargo", "pkgid", "--manifest-path", "{head}/difftest/rust-png-head/Cargo.toml", "png"]
+build = ["sh", "-ec", '''
+d={head}/difftest/rust-png-head
+mkdir -p $d/src
+cp impls/rust-png/src/main.rs $d/src/main.rs
+[ -f $d/Cargo.lock ] || cp impls/rust-png/Cargo.lock $d/Cargo.lock
+printf '[package]\nname = "rust-png-shim"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\npng = "0.18.1"\n\n[patch.crates-io.png]\npath = "%s"\n' {head}/src/image-png > $d/Cargo.toml
+cargo build --release --quiet --manifest-path $d/Cargo.toml
+''']
+memcheck = true
+
+[ffmpeg-head]
+project = "ffmpeg"
+variant = "HEAD"
+revision = "179d083 2026-10-22"
+lineage = "ffmpeg"
+notes = "ffmpeg's own pngdec via the CLI, first frame, PAM muxer. Output pinned to rgba|rgba64be: left to itself the CLI negotiates pal8-with-alpha to rgb24 and drops the alpha, and swscale's 8->16 is not x*257, so neither auto nor forced-16 is faithful. Built in-tree in {head}/ffmpeg (static, --disable-everything plus the png/apng decoders, image2/apng/png_pipe demuxers, png parser, file protocol, image2 muxer, pam encoder, format/scale/null filters); no build step here because ffmpeg only builds in its own tree."
+cmd = ["{head}/ffmpeg/ffmpeg", "-nostdin", "-hide_banner", "-v", "warning", "-i", "{input}", "-vf", "format=rgba|rgba64be", "-frames:v", "1", "-update", "1", "-f", "image2", "-c:v", "pam", "-y", "{output}"]
+version = ["{head}/ffmpeg/ffmpeg", "-version"]
+mem_mb = 4096
+memcheck = true
+
+[imagemagick-head]
+project = "imagemagick"
+variant = "HEAD"
+revision = "a0ac982 2026-10-22"
+lineage = "libpng"
+notes = "ImageMagick PNG coder on top of libpng; first frame. -depth 16 because IM tags palette images with the index bit depth and its PAM writer quantizes samples to that depth. 7.1.2-35 beta, Q16 HDRI, static, PNG-only configure, over the system libpng; a0ac982 needs the missing ';' in MagickCore/draw.c restored to compile (the build does that)."
+cmd = ["{head}/difftest/imagemagick-head/inst/bin/magick", "{input}[0]", "-depth", "16", "pam:{output}"]
+version = ["{head}/difftest/imagemagick-head/inst/bin/magick", "-version"]
+build = ["sh", "-ec", '''
+d={head}/difftest/imagemagick-head
+rm -rf $d/src $d/inst
+mkdir -p $d/src
+git -C {head}/ctools/imagemagick archive HEAD | tar -x -C $d/src
+sed -i 's/^    return(MagickTrue)$/    return(MagickTrue);/' $d/src/MagickCore/draw.c
+cd $d/src
+./configure -q --prefix=$d/inst --disable-shared --enable-static --without-magick-plus-plus --without-perl --without-x --disable-openmp --disable-docs --without-modules --with-png=yes --without-jpeg --without-tiff --without-webp --without-heic --without-jxl --without-raw --without-openexr --without-fontconfig --without-freetype --without-lcms --without-xml --without-lqr --without-djvu --without-openjp2 --without-zstd --without-lzma --without-bzlib --without-raqm --without-pango --without-rsvg --without-wmf --without-gvc --without-fftw --without-jbig --without-dps --without-fpx --without-uhdr
+make -s -j"$(nproc)"
+make -s install
+''']
+mem_mb = 4096
+memcheck = true
+
+[graphicsmagick-head]
+project = "graphicsmagick"
+variant = "HEAD"
+revision = "hg 18216:0ca2165aa07c 2026-10-21"
+lineage = "libpng"
+notes = "GraphicsMagick PNG coder over libpng; -depth 16 for the same reason as ImageMagick. Mercurial tip, Q16, static, PNG-only configure, over the system libpng."
+cmd = ["{head}/difftest/graphicsmagick-head/inst/bin/gm", "convert", "{input}[0]", "-depth", "16", "pam:{output}"]
+version = ["{head}/difftest/graphicsmagick-head/inst/bin/gm", "version"]
+build = ["sh", "-ec", '''
+d={head}/difftest/graphicsmagick-head
+rm -rf $d/src $d/inst
+mkdir -p $d
+hg archive -R {head}/ctools/gm -r . -t files $d/src
+cd $d/src
+./configure -q --prefix=$d/inst --disable-shared --enable-static --without-magick-plus-plus --without-perl --without-x --disable-openmp --without-modules --with-png --without-jpeg --without-tiff --without-webp --without-jxl --without-lcms2 --without-xml --without-zstd --without-lzma --without-bzlib --without-wmf --without-jbig --without-dps --without-fpx --without-ttf --without-trio --without-jp2 --without-heif --with-quantum-depth=16
+make -s -j"$(nproc)"
+make -s install
+''']
+mem_mb = 4096
+memcheck = true
+
+[pngcheck-head]
+project = "pngcheck"
+variant = "HEAD"
+revision = "bd33ad6 2025-12-15"
+lineage = "pngcheck"
+notes = "structural validator, verdict only. HEAD reports 4.0.1 (release column: Arch 4.0.0); compiled with the flags of the clone's Makefile."
+pixels = false
+cmd = ["{head}/difftest/pngcheck-head/pngcheck", "-v", "{input}"]
+version = ["{head}/difftest/pngcheck-head/pngcheck", "-h"]
+build = ["sh", "-ec", '''
+d={head}/difftest/pngcheck-head
+mkdir -p $d
+cc -pedantic-errors -Wall -Wextra -Wundef -O2 -o $d/pngcheck {head}/ctools/pngcheck/pngcheck.c -lz
+''']
+memcheck = true
+
+[lodepng-head]
+project = "lodepng"
+variant = "HEAD"
+revision = "e584a84 2026-10-06"
+lineage = "lodepng"
+notes = "single-file C/C++ decoder; RGBA at source depth; CRC and Adler-32 checks on by default. lodepng.cpp/.h at this revision are byte-identical to the vendored impls/lodepng copy."
+cmd = ["{head}/difftest/lodepng-head/shim", "{input}", "{output}"]
+version = ["{head}/difftest/lodepng-head/shim", "--version"]
+build = ["sh", "-ec", '''
+d={head}/difftest/lodepng-head
+mkdir -p $d
+cp impls/lodepng/shim.cpp $d/shim.cpp
+c++ -O2 -Wall -Wextra -I{head}/clibs/lodepng -o $d/shim $d/shim.cpp {head}/clibs/lodepng/lodepng.cpp
+''']
+memcheck = true
+
+[libspng-head]
+project = "libspng"
+variant = "HEAD"
+revision = "46c81dc 2026-08-31"
+lineage = "libspng"
+notes = "SPNG_FMT_RGBA8/16 with SPNG_DECODE_TRNS. spng.c from the clone compiled into the shim with the defines its meson build uses on this host (zlib, target_clones); reports 0.7.4 like the release."
+cmd = ["{head}/difftest/libspng-head/shim", "{input}", "{output}"]
+version = ["{head}/difftest/libspng-head/shim", "--version"]
+build = ["sh", "-ec", '''
+d={head}/difftest/libspng-head
+mkdir -p $d
+cc -O2 -std=c99 -Wall -Wextra -DSPNG_STATIC -DSPNG_ENABLE_TARGET_CLONES -I{head}/ctools/libspng/spng -o $d/shim impls/spng/shim.c {head}/ctools/libspng/spng/spng.c -lz -lm
+''']
+memcheck = true
+
+[wuffs-head]
+project = "wuffs"
+variant = "HEAD"
+revision = "4be865d 2026-10-21"
+lineage = "wuffs"
+notes = "wuffs_aux::DecodeImage with default quirks and limits; non-premultiplied RGBA at source depth. Built against release/c/wuffs-unsupported-snapshot.c (the code generated from HEAD); the release column vendors wuffs-v0.4.c. The snapshot's version string is the placeholder 0.0.0+0.00000000."
+cmd = ["{head}/difftest/wuffs-head/shim", "{input}", "{output}"]
+version = ["{head}/difftest/wuffs-head/shim", "--version"]
+build = ["sh", "-ec", '''
+d={head}/difftest/wuffs-head
+mkdir -p $d
+sed 's/#include "wuffs-v0.4.c"/#include "wuffs-unsupported-snapshot.c"/' impls/wuffs/shim.cpp > $d/shim.cpp
+grep -q 'wuffs-unsupported-snapshot.c' $d/shim.cpp
+c++ -O2 -Wall -Wextra -Wno-unused-parameter -I{head}/clibs/wuffs/release/c -o $d/shim $d/shim.cpp
+''']
+memcheck = true
+
+[zune-png-head]
+project = "zune-png"
+variant = "HEAD"
+revision = "33007f6 2026-10-22"
+lineage = "zune"
+notes = "zune-png crate, default DecoderOptions. Branch dev (the default; main is stale and does not build); zune-png, zune-core and zune-inflate patched to the clone's crates."
+cmd = ["{head}/difftest/zune-png-head/target/release/zune-png-shim", "{input}", "{output}"]
+version = ["cargo", "pkgid", "--manifest-path", "{head}/difftest/zune-png-head/Cargo.toml", "zune-png"]
+build = ["sh", "-ec", '''
+d={head}/difftest/zune-png-head
+z={head}/src/zune-image/crates
+mkdir -p $d/src
+cp impls/zune-png/src/main.rs $d/src/main.rs
+[ -f $d/Cargo.lock ] || cp impls/zune-png/Cargo.lock $d/Cargo.lock
+printf '[package]\nname = "zune-png-shim"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\nzune-core = "0.5.3"\nzune-png = "0.5.2"\n\n[patch.crates-io.zune-png]\npath = "%s/zune-png"\n\n[patch.crates-io.zune-core]\npath = "%s/zune-core"\n\n[patch.crates-io.zune-inflate]\npath = "%s/zune-inflate"\n' $z $z $z > $d/Cargo.toml
+cargo build --release --quiet --manifest-path $d/Cargo.toml
+''']
+memcheck = true
+
+[imagesharp-head]
+project = "imagesharp"
+variant = "HEAD"
+revision = "d1367d4 2026-04-07"
+lineage = "imagesharp"
+notes = "SixLabors.ImageSharp on .NET; Rgba32 or Rgba64 chosen from the IHDR depth. Branch release/3.1.x (v3.1.12-13-gd1367d4) built from source through a ProjectReference, net6.0 library on the .NET 9 runtime; the SharedInfrastructure submodule is cloned at its pinned commit 353b9af. --version says 0.0.1 because the archived tree has no git history for MinVer. main (4.x) is not built: it needs the .NET 10 SDK and a Six Labors licence key at build time."
+cmd = ["{head}/difftest/imagesharp-head/publish/ImageSharpShim", "{input}", "{output}"]
+version = ["{head}/difftest/imagesharp-head/publish/ImageSharpShim", "--version"]
+build = ["sh", "-ec", '''
+d={head}/difftest/imagesharp-head
+rm -rf $d/src $d/shim $d/publish
+mkdir -p $d/src $d/shim
+git -C {head}/src/ImageSharp-3.1.x archive HEAD | tar -x -C $d/src
+git clone -q https://github.com/SixLabors/SharedInfrastructure $d/src/shared-infrastructure
+git -C $d/src/shared-infrastructure checkout -q 353b9afe32a8000410312d17263407cd7bb82d19
+cp impls/imagesharp/Program.cs $d/shim/
+sed -E 's#<PackageReference Include="SixLabors.ImageSharp" Version="[^"]*" />#<ProjectReference Include="../src/src/ImageSharp/ImageSharp.csproj" />#' impls/imagesharp/ImageSharpShim.csproj > $d/shim/ImageSharpShim.csproj
+grep -q ProjectReference $d/shim/ImageSharpShim.csproj
+DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 dotnet publish $d/shim -c Release -o $d/publish -v q --nologo
+''']
+# EnableWriteXorExecute=0: the runtime's W^X double mapping ftruncates a 2 GiB memfd, which trips RLIMIT_FSIZE.
+env = { DOTNET_GCHeapHardLimit = "0x40000000", DOTNET_TieredPGO = "0", DOTNET_EnableWriteXorExecute = "0", DOTNET_CLI_TELEMETRY_OPTOUT = "1", DOTNET_NOLOGO = "1" }
+mem_mb = 8192
+timeout_s = 60
+memcheck = false
+
+[fast-png-head]
+creates = "{head}/difftest/fast-png-head/fast-png.mjs"
+project = "fast-png"
+variant = "HEAD"
+revision = "31b93cf 2026-04-12"
+lineage = "fast-png"
+notes = "image-js fast-png (JavaScript). fast-png returns greyscale/RGB tRNS to the caller instead of applying it; the shim applies it as a conforming caller would (masked to the bit depth), so tRNS results for those colour types measure the shim's use of the interface. HEAD reports 8.0.0 like the release; lib/ is compiled from the clone's src/ with its own tsc, dependencies (fflate, iobuffer) from the clone's node_modules."
+cmd = ["node", "{head}/difftest/fast-png-head/fast-png.mjs", "{input}", "{output}"]
+version = ["node", "{head}/difftest/fast-png-head/fast-png.mjs", "--version"]
+build = ["sh", "-ec", '''
+d={head}/difftest/fast-png-head
+s={head}/scripting/fast-png
+rm -rf $d
+mkdir -p $d/node_modules/fast-png/node_modules
+cp impls/node/fast-png.mjs $d/
+cp $s/package.json $d/node_modules/fast-png/
+$s/node_modules/.bin/tsc --project $s/tsconfig.build.json --outDir $d/node_modules/fast-png/lib
+ln -s ../../../../../scripting/fast-png/node_modules/fflate $d/node_modules/fast-png/node_modules/fflate
+ln -s ../../../../../scripting/fast-png/node_modules/iobuffer $d/node_modules/fast-png/node_modules/iobuffer
+''']
+memcheck = false
+
+[pngjs-head]
+creates = "{head}/difftest/pngjs-head/pngjs.mjs"
+project = "pngjs"
+variant = "HEAD"
+revision = "c565210 2023-05-06"
+lineage = "pngjs"
+notes = "pngjs sync API with skipRescale; always RGBA. HEAD reports 7.0.0 like the release; the shim is copied next to a node_modules/pngjs symlink to the clone."
+cmd = ["node", "{head}/difftest/pngjs-head/pngjs.mjs", "{input}", "{output}"]
+version = ["node", "{head}/difftest/pngjs-head/pngjs.mjs", "--version"]
+build = ["sh", "-ec", '''
+d={head}/difftest/pngjs-head
+rm -rf $d
+mkdir -p $d/node_modules
+cp impls/node/pngjs.mjs $d/
+ln -s ../../../scripting/pngjs $d/node_modules/pngjs
+''']
+memcheck = false
+
+[upng-head]
+creates = "{head}/difftest/upng-head/upng.mjs"
+project = "upng"
+variant = "HEAD"
+revision = "88f504b 2023-07-22"
+lineage = "upng"
+notes = "UPNG.js decode + toRGBA8, first frame; 8-bit only. master (2.2.0) is a browser script with no exports: node_modules/upng-js/index.cjs runs the clone's UPNG.js in a vm context and exports UPNG; --version reports 2.2.0 (release column: npm 2.1.0)."
+cmd = ["node", "{head}/difftest/upng-head/upng.mjs", "{input}", "{output}"]
+version = ["node", "{head}/difftest/upng-head/upng.mjs", "--version"]
+build = ["sh", "-ec", '''
+d={head}/difftest/upng-head
+rm -rf $d
+mkdir -p $d/node_modules/upng-js
+cp impls/node/upng.mjs $d/
+sed 's#"main": "UPNG"#"main": "index.cjs"#' {head}/scripting/UPNG.js/package.json > $d/node_modules/upng-js/package.json
+grep -q index.cjs $d/node_modules/upng-js/package.json
+cat > $d/node_modules/upng-js/index.cjs <<'EOF'
+// Runs the master UPNG.js (a browser script with no module export) in a vm context.
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+const src = fs.readFileSync(path.join(__dirname, '../../../../scripting/UPNG.js/UPNG.js'), 'utf8');
+const ctx = vm.createContext(new Object());
+ctx.window = new Object();
+for (const k of ['console', 'Uint8Array', 'Uint16Array', 'Uint32Array', 'Int32Array', 'Float32Array', 'Float64Array', 'ArrayBuffer', 'DataView', 'Math', 'Date', 'Array', 'String', 'Error', 'TypeError']) ctx[k] = globalThis[k];
+vm.runInContext(src + '\n;this.UPNG = UPNG;', ctx);
+module.exports = ctx.UPNG;
+EOF
+''']
+max_depth = 8
+memcheck = false
+
+[pillow-head]
+project = "pillow"
+variant = "HEAD"
+revision = "d4b99a3 2026-10-23"
+lineage = "pillow"
+notes = "Pillow's own PNG plugin (zlib, not libpng); convert('RGBA') for modes up to 8 bits, 16-bit grey kept; Pillow reads 16-bit RGB(A) as 8-bit. main (13.1.0.dev0) built from a git archive of the clone into its own uv venv (CPython 3.13)."
+cmd = ["{head}/difftest/pillow-head/venv/bin/python", "impls/pillow_shim.py", "{input}", "{output}"]
+version = ["{head}/difftest/pillow-head/venv/bin/python", "impls/pillow_shim.py", "--version"]
+build = ["sh", "-ec", '''
+d={head}/difftest/pillow-head
+rm -rf $d
+mkdir -p $d/src
+git -C {head}/scripting/Pillow archive HEAD | tar -x -C $d/src
+uv venv -q --python 3.13 $d/venv
+uv pip install -q --python $d/venv/bin/python $d/src
+''']
+max_depth = 8
+memcheck = false
+
+[pypng-head]
+project = "pypng"
+variant = "HEAD"
+revision = "f6899c4 2025-10-29"
+lineage = "pypng"
+notes = "pure-Python pypng Reader.asRGBA(); honours sBIT by rescaling. GitLab main (0.20250521.0; GitHub and PyPI carry the 2022 code) loaded through PYTHONPATH from the clone's code/ directory."
+cmd = ["{head}/difftest/pypng-head/venv/bin/python", "impls/pypng_shim.py", "{input}", "{output}"]
+version = ["{head}/difftest/pypng-head/venv/bin/python", "impls/pypng_shim.py", "--version"]
+build = ["sh", "-ec", '''
+d={head}/difftest/pypng-head
+rm -rf $d
+uv venv -q --python 3.13 $d/venv
+''']
+env = { PYTHONPATH = "{head}/scripting/pypng-gitlab/code", PYTHONDONTWRITEBYTECODE = "1" }
+timeout_s = 120
+memcheck = false
+
+[opencv-head]
+project = "opencv"
+variant = "HEAD"
+revision = "ce58bb1 2026-10-22"
+lineage = "libpng"
+notes = "OpenCV imread IMREAD_UNCHANGED over its bundled libpng. Thread pools capped: with 32 threads of OpenBLAS/OpenMP buffers it segfaults under a 4 GiB address-space limit. Branch 5.x (the default) built static with core,imgproc,imgcodecs and the python3 bindings, bundled libpng (1.6.57 at this revision) and zlib, everything else off (harfbuzz and freetype too, which would otherwise pull the system libpng into the process); the 4.x branch is not built."
+cmd = ["{head}/difftest/opencv-head/venv/bin/python", "impls/opencv_shim.py", "{input}", "{output}"]
+version = ["{head}/difftest/opencv-head/venv/bin/python", "impls/opencv_shim.py", "--version"]
+build = ["sh", "-ec", '''
+d={head}/difftest/opencv-head
+# the bindings generator is Python run from the source tree: keep it from writing __pycache__ there
+export PYTHONDONTWRITEBYTECODE=1
+rm -rf $d/build $d/inst
+mkdir -p $d
+uv venv -q --allow-existing --python 3.13 $d/venv
+uv pip install -q --python $d/venv/bin/python numpy
+py=$d/venv/bin/python
+cmake -S {head}/clibs/opencv -B $d/build -G Ninja -Wno-dev -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$d/inst -DOPENCV_DOWNLOAD_PATH=$d/download -DENABLE_CCACHE=OFF -DBUILD_LIST=core,imgproc,imgcodecs,python3,python_bindings_generator -DBUILD_SHARED_LIBS=OFF -DBUILD_PNG=ON -DBUILD_ZLIB=ON -DWITH_PNG=ON -DWITH_SPNG=OFF -DWITH_HARFBUZZ=OFF -DWITH_FREETYPE=OFF -DWITH_JPEG=OFF -DWITH_TIFF=OFF -DWITH_WEBP=OFF -DWITH_OPENJPEG=OFF -DWITH_JASPER=OFF -DWITH_OPENEXR=OFF -DWITH_AVIF=OFF -DWITH_JPEGXL=OFF -DWITH_IPP=OFF -DWITH_ITT=OFF -DWITH_OPENCL=OFF -DWITH_LAPACK=OFF -DWITH_EIGEN=OFF -DWITH_OPENMP=OFF -DWITH_TBB=OFF -DWITH_QT=OFF -DWITH_GTK=OFF -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DWITH_V4L=OFF -DWITH_PROTOBUF=OFF -DWITH_VTK=OFF -DWITH_GDAL=OFF -DWITH_GDCM=OFF -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF -DBUILD_opencv_apps=OFF -DBUILD_JAVA=OFF -DPYTHON3_EXECUTABLE=$py -DPYTHON3_LIBRARY=$($py -c 'import sysconfig as s; print(s.get_config_var("LIBDIR") + "/" + s.get_config_var("LDLIBRARY"))') -DPYTHON3_INCLUDE_DIR=$($py -c 'import sysconfig; print(sysconfig.get_paths()["include"])') -DPYTHON3_NUMPY_INCLUDE_DIRS=$($py -c 'import numpy; print(numpy.get_include())') -DOPENCV_PYTHON3_INSTALL_PATH=$d/inst/python
+cmake --build $d/build
+cmake --install $d/build
+''']
+env = { PYTHONPATH = "{head}/difftest/opencv-head/inst/python", OPENBLAS_NUM_THREADS = "1", OMP_NUM_THREADS = "1", OPENCV_FOR_THREADS_NUM = "1" }
+mem_mb = 8192
+memcheck = false
+
+[chunky_png-head]
+project = "chunky_png"
+variant = "HEAD"
+revision = "7a1faf6 2021-06-06"
+lineage = "chunky_png"
+notes = "pure-Ruby ChunkyPNG; 8-bit RGBA only. master (v1.4.0-3-g7a1faf6: three unreleased commits after 1.4.0) loaded through RUBYLIB from the clone's lib/."
+cmd = ["ruby", "impls/ruby/chunky_png_shim.rb", "{input}", "{output}"]
+version = ["ruby", "impls/ruby/chunky_png_shim.rb", "--version"]
+env = { RUBYLIB = "{head}/scripting/chunky_png/lib" }
+max_depth = 8
+timeout_s = 120
+memcheck = false
+
+[pngtopam-head]
+project = "pngtopam"
+variant = "HEAD"
+revision = "svn advanced r5409, last changed r5388 2026-10-08"
+lineage = "libpng"
+notes = "netpbm pngtopam -alphapam: libpng with netpbm's policies. Netpbm 11.16.1 (advanced branch; pngtopam.c identical to trunk; release column: Arch super_stable 10.86) over the system libpng. Built in-tree in {head}/ctools/netpbm; LD_LIBRARY_PATH points it at that build's libnetpbm, without which it silently loads the system's libnetpbm.so.11."
+cmd = ["sh", "-c", "exec {head}/ctools/netpbm/converter/other/pngtopam -alphapam \"$1\" > \"$2\"", "pngtopam", "{input}", "{output}"]
+version = ["{head}/ctools/netpbm/converter/other/pngtopam", "--version"]
+env = { LD_LIBRARY_PATH = "{head}/ctools/netpbm/lib" }
+memcheck = true
+
+[go-png-head]
+project = "go-png"
+variant = "HEAD"
+revision = "5391dd5 2026-10-22"
+lineage = "go"
+notes = "Go standard library image/png; the returned image type is written in its native layout. Built with Go master (go1.28-devel) from gotip, which keeps its toolchain in ~/sdk/gotip: `go install golang.org/dl/gotip@latest && gotip download` before the build; a later `gotip download` moves that toolchain to a newer commit, so the build only reproduces this revision until then. The shim binary is static."
+cmd = ["{head}/difftest/go-png-head/shim", "{input}", "{output}"]
+version = ["{head}/difftest/go-png-head/shim", "--version"]
+build = ["sh", "-ec", '''
+d={head}/difftest/go-png-head
+mkdir -p $d
+cp impls/go-png/main.go impls/go-png/go.mod $d/
+cd $d
+GOTOOLCHAIN=local GOFLAGS=-trimpath "$HOME/sdk/gotip/bin/go" build -o shim .
+''']
+memcheck = false

@@ -1,0 +1,219 @@
+id	section	modality	subject	consequence	statement	editions
+5.2#signature	5.2, 13.1	shall	datastream	reject	The first eight bytes of a PNG datastream always contain 89 50 4E 47 0D 0A 1A 0A; decoders should verify that all eight bytes are correct.	2,3
+5.3#length-limit	5.3	shall	datastream	reject	Although encoders and decoders should treat the length as unsigned, its value shall not exceed 2^31-1 bytes.	2,3
+5.3#type-letters	5.3, 13.2	shall	datastream	either	Chunk types are restricted to bytes 41-5A and 61-7A (A-Z, a-z); 13.2: the chunk type can be checked for plausibility. Reference: rejected as corruption.	2,3
+5.3#zero-length	5.3	note	datastream	none	Zero is a valid length. Reached for a zero-length chunk other than IEND.	2,3
+13.1#end-of-stream	13.1	may	decoder	either	A PNG signature mismatch, a CRC mismatch, or an unexpected end-of-stream indicates a corrupted datastream, and may be regarded as a fatal error. Reference: a chunk cut short by the end of the datastream is fatal.	2,3
+13.1#crc-critical	5.5, 13.1	may	decoder	either	A CRC mismatch indicates a corrupted datastream and may be regarded as a fatal error. Reference: fatal on a critical chunk, except PLTE in a truecolour image (dropped) and IEND (accepted), which 13.1 says can be ignored when invalid; those two warn.	2,3
+13.1#crc-ancillary	5.5, 13.1	may	decoder	either	A CRC mismatch on an ancillary chunk may be regarded as fatal. Reference: the chunk is dropped with a warning and takes no further part in decoding.	2,3
+5.4#unknown-critical	5.4, 13.1, 13.5	shall	decoder	reject	A decoder trying to extract the image, upon encountering an unknown chunk in which the ancillary bit is 0, shall indicate to the user that the image contains information it cannot safely interpret.	2,3
+5.4#unknown-ancillary	5.4, 13.1	shall	decoder	none	Encountering an unknown ancillary chunk is never an error. The chunk can simply be ignored. Under edition 2 this includes cICP, mDCV, cLLI, eXIf, acTL, fcTL and fdAT.	2,3
+13.5#reserved-bit	13.5	should	decoder	none	Decoders should not flag an error if the reserved bit is set to 1; it is sufficient to treat a chunk with this bit set in the same way as any other unknown chunk type.	2,3
+13.5#literal-comparison	13.5	shall	decoder	none	Decoders shall recognize chunk types by a simple four-byte literal comparison; it is incorrect to perform case conversion on chunk types. Reached for an unknown chunk type that differs from a known one only in letter case.	2,3
+5.6#before-plte	5.6 Table 7	shall	datastream	recover	cHRM, gAMA, iCCP, sBIT, sRGB (and in edition 3 cICP, mDCV, cLLI): Before PLTE and IDAT. A misplaced chunk is ignored (13.2).	2,3
+5.6#after-plte	5.6 Table 7	shall	datastream	recover	bKGD, hIST, tRNS: After PLTE; before IDAT. Misplaced before PLTE in an indexed image or after IDAT: ignored. Before a suggested PLTE in a truecolour image: warned, kept.	2,3
+5.6#before-idat	5.6 Table 7	shall	datastream	recover	pHYs, sPLT (and in edition 3 eXIf): Before IDAT. A misplaced chunk is ignored (13.2).	2,3
+5.6#single-ancillary	5.6 Table 7, 13.1	shall	datastream	recover	Chunks marked 'Multiple allowed: No' appear at most once; 13.1 names the presence of multiple gAMA chunks as a syntax error. The second occurrence is ignored.	2,3
+5.6#iccp-srgb	5.6 Table 7	should	datastream	recover	If the iCCP chunk is present, the sRGB chunk should not be present, and the reverse.	2,3
+14.3.2#ancillary-position	14.3.2, 15.3.3	shall	decoder	none	Decoders shall not assume more about the positioning of any ancillary chunk than is specified by the chunk ordering rules. Reached for an ancillary chunk after IDAT.	2,3
+11.2#ihdr-first	11.2.1, 5.6	shall	datastream	reject	The IHDR chunk shall be the first chunk in the PNG datastream.	2,3
+11.2#one-ihdr	11.2, 5.6	shall	datastream	reject	IHDR: Multiple allowed: No.	2,3
+11.2#idat-present	11.2	shall	datastream	reject	A valid PNG datastream shall begin with a PNG signature, immediately followed by an IHDR chunk, then one or more IDAT chunks, and shall end with an IEND chunk. No image data: fatal.	2,3
+11.2#iend-last	11.2.4, 15.3.1, 13.1, 13.3	shall	datastream	recover	IEND shall be last and its data field is empty; 15.3.1: no chunks or other content follow the IEND chunk. 13.1: most decoders can ignore an invalid IEND chunk; 13.3 acknowledges data after IEND. Data in IEND or after it is ignored.	2,3
+11.2#iend-present	11.2, 13.1	shall	datastream	either	A valid datastream shall end with an IEND chunk; an unexpected end-of-stream may be regarded as fatal. Reference: a datastream that ends cleanly after its image data warns.	2,3
+7.1#byte-order	7.1	shall	datastream	none	All integers that require more than one byte shall be in network byte order. Reached for 16-bit samples.	2,3
+7.1#uint31	7.1	shall	datastream	recover	PNG four-byte unsigned integers are limited to the range 0 to 2^31-1. Reference: an ancillary chunk holding a larger value in a four-byte unsigned integer field (cHRM, gAMA, pHYs, mDCV, cLLI, acTL, fcTL, fdAT) is ignored; for the APNG chunks the static image is decoded.	2,3
+7.2#packing	7.2	shall	datastream	none	Pixels smaller than a byte are packed with the leftmost pixel in the high-order bits; scanlines always begin on byte boundaries. Reached for bit depths below 8.	2,3
+7.2#padding-unspecified	7.2	note	decoder	none	When a scanline does not fill its last byte the unused low-order bits are not specified; a decoder cannot depend on them. Reached when those bits are nonzero.	2,3
+8.1#adam7	8.1, 13.10	shall	decoder	none	Interlace method 1 (Adam7): seven passes; decoders are required to read interlaced images.	2,3
+9.1#empty-pass	9.1, 8.1	shall	datastream	none	Filter type bytes are associated only with non-empty scanlines. No filter type bytes are present in an empty pass. Reached for an Adam7 pass of zero width that has rows (image narrower than the pass offset).	2,3
+9.1#pass-without-rows	9.1, 8.1	shall	datastream	none	As 9.1#empty-pass, for an Adam7 pass with no rows (image shorter than the pass offset).	2,3
+9.1#single-filter-method	9.1	shall	datastream	none	All the reduced images in an interlaced image shall use a single filter method. (Not emitted: IHDR carries the one filter method, so no datastream can violate this.)	2,3
+9.2#filter-types	9.2, 13.1	shall	both	reject	Filter method 0 specifies exactly this set of five filter types and this shall not be extended; 13.1 names an invalid row filter value as a syntax error. Fatal in image data.	2,3
+9.2#filter-none	9.2	shall	decoder	none	Filter type 0 None: Recon(x) = Filt(x). Reached when a scanline uses it.	2,3
+9.2#filter-sub	9.2	shall	decoder	none	Filter type 1 Sub: Recon(x) = Filt(x) + Recon(a). Reached when a scanline uses it.	2,3
+9.2#filter-up	9.2	shall	decoder	none	Filter type 2 Up: Recon(x) = Filt(x) + Recon(b). Reached when a scanline uses it.	2,3
+9.2#filter-average	9.2, 9.3	shall	decoder	none	Filter type 3 Average: Recon(x) = Filt(x) + floor((Recon(a) + Recon(b)) / 2). Reached when a scanline uses it.	2,3
+9.2#filter-paeth	9.2, 9.4	shall	decoder	none	Filter type 4 Paeth: Recon(x) = Filt(x) + PaethPredictor(Recon(a), Recon(b), Recon(c)). Reached when a scanline uses it.	2,3
+9.2#byte-distance	9.2	shall	decoder	none	a is the byte corresponding to x in the pixel immediately before the pixel containing x (bpp bytes back, rounding up to one). Reached when Sub, Average or Paeth is used with bpp > 1.	2,3
+9.2#left-zero	9.2	shall	decoder	none	For all filters, the bytes to the left of the first pixel in a scanline shall be treated as being zero. Reached when Sub, Average or Paeth is used.	2,3
+9.2#first-scanline	9.2	shall	decoder	none	For filters that refer to the prior scanline, the entire prior scanline shall be treated as being zeroes for the first scanline of a reduced image. Reached when Up, Average or Paeth starts a reduced image.	2,3
+9.3#average-overflow	9.3	shall	decoder	none	The sum Orig(a) + Orig(b) shall be performed without overflow (using at least nine-bit arithmetic). Reached when a sum exceeded 255.	2,3
+9.4#paeth-order	9.4	shall	decoder	none	The order in which the comparisons are performed is critical and shall not be altered. Reached when a tie between predictors of different value decided the result (pa == pc with a != c, or pb == pc < pa with b != c).	2,3
+9.4#paeth-exact	9.4	shall	decoder	none	The calculations within the PaethPredictor function shall be performed exactly, without overflow. Reached when p = a + b - c fell outside 0..255.	2,3
+10.1#zlib-method	10.1	shall	datastream	reject	The zlib compression method/flags code shall specify method code 8 (deflate compression) and an LZ77 window size of not more than 32768 bytes.	2,3
+10.1#no-preset-dictionary	10.1	shall	datastream	reject	The additional flags shall not specify a preset dictionary.	2,3
+10.1#deflate-valid	10.1	shall	datastream	none	Deflate-compressed datastreams within PNG are stored in the zlib format (RFC 1950) with deflate data (RFC 1951). Reached alongside the rfc1950/rfc1951 id that rejects the image data.	2,3
+10.1#zlib-check	10.1, RFC 1950 2.2	note	decoder	either	The zlib datastream ends with its Adler-32 check value; PNG does not say what a decoder does when the stream stops early. Reference: a stream that stops after the image data is complete (final block unfinished, or Adler-32 absent or cut) warns. A wrong Adler-32 is rfc1950-2.3#adler32. The same warning policy applies to DEFLATE/zlib faults detected after the complete image data, except that a wrong Adler-32 remains fatal.	2,3
+10.1#deflate-shape	10.1, RFC 1951	note	decoder	none	Any RFC-conforming block shape decodes the same. (Not emitted: umbrella; the shapes are the rfc1951-* positive rows.)	2,3
+10.2#idat-boundaries	10.2, 13.8	note	decoder	none	IDAT chunk boundaries have no semantic significance and can occur at any point in the compressed datastream. Reached for image data in more than one IDAT chunk.	2,3
+10.2#idat-empty	10.2, 11.2.3	note	decoder	none	The compressed datastream is the concatenation of the IDAT data fields (noting that data fields may be of zero length). Reached for a zero-length IDAT.	2,3
+10.2#split-zlib-header	10.2, 13.8	note	decoder	none	As 10.2#idat-boundaries: an IDAT boundary between the two zlib header bytes.	2,3
+10.2#split-adler32	10.2, 13.8	note	decoder	none	As 10.2#idat-boundaries: an IDAT boundary inside the Adler-32 check value.	2,3
+11.2.3#consecutive	11.2.3, 5.6	shall	datastream	reject	There may be multiple IDAT chunks; if so, they shall appear consecutively with no other intervening chunks.	2,3
+11.2.3#trailing-bytes	11.2.3	should	decoder	recover	Some images have unused trailing bytes at the end of the final IDAT chunk ... A decoder should ignore these trailing bytes. (Edition 2 is silent; both editions warn and ignore.)	2,3
+13.1#data-short	13.1	may	decoder	reject	An unexpected end-of-stream may be regarded as fatal: decompressed image data ending before the last scanline is fatal.	2,3
+13.1#data-long	11.2.3, 13.1	note	decoder	either	Decompressed data beyond the last scanline is not addressed by the specification. Reference: ignored with a warning.	2,3
+11.2.1#length	11.2.1, 13.2	should	decoder	reject	IHDR is 13 bytes; for known-length chunks, such as IHDR, decoders should treat an unexpected chunk length as an error.	2,3
+11.2.1#dimensions-nonzero	11.2.1	shall	datastream	reject	Width and height give the image dimensions in pixels. Zero is an invalid value.	2,3
+11.2.1#dimensions-range	7.1, 11.2.1	shall	datastream	reject	PNG four-byte unsigned integers are limited to the range 0 to 2^31-1.	2,3
+11.2.1#colour-type	11.2.1, 15.3.3	shall	decoder	reject	Valid colour types are 0, 2, 3, 4 and 6; an error is reported if an unrecognized value is encountered in the colour type byte.	2,3
+11.2.1#bit-depth	11.2.1, 15.3.3	shall	decoder	reject	Valid bit depths are 1, 2, 4, 8 and 16; an error is reported if an unrecognized value is encountered in the bit depth byte.	2,3
+11.2.1#combination	11.2.1 Table 12, 13	shall	both	reject	Only the colour type and bit depth combinations of Table 12 are allowed; PNG decoders shall support all valid combinations.	2,3
+11.2.1#compression-method	11.2.1, 13.2	shall	decoder	reject	Only compression method 0 is defined. Decoders shall check this byte and report an error if it holds an unrecognized code.	2,3
+11.2.1#filter-method	11.2.1, 15.3.3	shall	decoder	reject	Only filter method 0 is defined; an unrecognized value is reported as an error.	2,3
+11.2.1#interlace-method	11.2.1, 15.3.3	shall	decoder	reject	Interlace method is 0 or 1; an unrecognized value is reported as an error.	2,3
+11.2.1#g1	11.2.1 Table 12, 15.3.3	shall	decoder	none	Decoders support every valid combination: greyscale (colour type 0) at bit depth 1. Reached for such an IHDR.	2,3
+11.2.1#g2	11.2.1 Table 12, 15.3.3	shall	decoder	none	Decoders support every valid combination: greyscale (colour type 0) at bit depth 2. Reached for such an IHDR.	2,3
+11.2.1#g4	11.2.1 Table 12, 15.3.3	shall	decoder	none	Decoders support every valid combination: greyscale (colour type 0) at bit depth 4. Reached for such an IHDR.	2,3
+11.2.1#g8	11.2.1 Table 12, 15.3.3	shall	decoder	none	Decoders support every valid combination: greyscale (colour type 0) at bit depth 8. Reached for such an IHDR.	2,3
+11.2.1#g16	11.2.1 Table 12, 15.3.3	shall	decoder	none	Decoders support every valid combination: greyscale (colour type 0) at bit depth 16. Reached for such an IHDR.	2,3
+11.2.1#rgb8	11.2.1 Table 12, 15.3.3	shall	decoder	none	Decoders support every valid combination: truecolour (colour type 2) at bit depth 8. Reached for such an IHDR.	2,3
+11.2.1#rgb16	11.2.1 Table 12, 15.3.3	shall	decoder	none	Decoders support every valid combination: truecolour (colour type 2) at bit depth 16. Reached for such an IHDR.	2,3
+11.2.1#p1	11.2.1 Table 12, 15.3.3	shall	decoder	none	Decoders support every valid combination: indexed-colour (colour type 3) at bit depth 1. Reached for such an IHDR.	2,3
+11.2.1#p2	11.2.1 Table 12, 15.3.3	shall	decoder	none	Decoders support every valid combination: indexed-colour (colour type 3) at bit depth 2. Reached for such an IHDR.	2,3
+11.2.1#p4	11.2.1 Table 12, 15.3.3	shall	decoder	none	Decoders support every valid combination: indexed-colour (colour type 3) at bit depth 4. Reached for such an IHDR.	2,3
+11.2.1#p8	11.2.1 Table 12, 15.3.3	shall	decoder	none	Decoders support every valid combination: indexed-colour (colour type 3) at bit depth 8. Reached for such an IHDR.	2,3
+11.2.1#ga8	11.2.1 Table 12, 15.3.3	shall	decoder	none	Decoders support every valid combination: greyscale with alpha (colour type 4) at bit depth 8. Reached for such an IHDR.	2,3
+11.2.1#ga16	11.2.1 Table 12, 15.3.3	shall	decoder	none	Decoders support every valid combination: greyscale with alpha (colour type 4) at bit depth 16. Reached for such an IHDR.	2,3
+11.2.1#rgba8	11.2.1 Table 12, 15.3.3	shall	decoder	none	Decoders support every valid combination: truecolour with alpha (colour type 6) at bit depth 8. Reached for such an IHDR.	2,3
+11.2.1#rgba16	11.2.1 Table 12, 15.3.3	shall	decoder	none	Decoders support every valid combination: truecolour with alpha (colour type 6) at bit depth 16. Reached for such an IHDR.	2,3
+11.2.2#required	11.2.1, 11.2.2, 5.6	shall	datastream	reject	Colour type 3: each pixel is a palette index; a PLTE chunk shall appear, before the first IDAT.	2,3
+11.2.2#invalid-indexed	11.2.2, 13.1	shall	datastream	reject	PLTE holds 1 to 256 entries; a chunk length not divisible by 3 is an error. 13.1: an image viewer cannot recover from an empty PLTE chunk in an indexed image.	2,3
+11.2.2#invalid-truecolour	11.2.2, 13.1	shall	datastream	recover	13.1: an image viewer can ignore an invalid PLTE chunk in a truecolour image (invalid length, or after IDAT).	2,3
+11.2.2#forbidden	11.2.2	shall	datastream	either	PLTE shall not appear for colour types 0 and 4. Reference: ignored with a warning.	2,3
+11.2.2#single	11.2.2	shall	datastream	either	There shall not be more than one PLTE chunk. Reference: fatal for colour type 3, ignored with a warning for a suggested palette.	2,3
+11.2.2#entries-vs-depth	11.2.2	shall	datastream	either	The number of palette entries shall not exceed the range that can be represented in the image bit depth. Reference: warning; the surplus entries are unreachable.	2,3
+11.2.2#fewer-entries	11.2.2	may	datastream	none	It is permissible to have fewer entries than the bit depth would allow. Reached for such a palette.	2,3
+11.2.2#suggested	11.2.2	may	datastream	none	For colour types 2 and 6 the PLTE chunk is optional; if present it provides a suggested set of colours and does not affect decoding.	2,3
+11.2.2#index-in-range	2nd ed. 11.2.3, 13.3	shall	both	reject	Edition 2: any out-of-range pixel value found in the image data is an error; 13.3 says unexpected values shall be treated as errors and recommends fatal errors in critical chunks. Reference: rejected. (Edition 3 instead requires opaque black: 13.1#index-opaque-black.)	2
+13.1#index-opaque-black	11.2.2, 13.1	shall	decoder	recover	Edition 3: any out-of-range pixel value is an error; if out-of-range indexes are encountered, displaying the pixel as opaque black is now required.	3
+11.3.1.1#forbidden	11.3.1.1	shall	datastream	recover	A tRNS chunk shall not appear for colour types 4 and 6, since a full alpha channel is already present. Ignored.	2,3
+11.3.1.1#length	11.3.1.1, 13.2	shall	datastream	recover	tRNS is 2 bytes for colour type 0 and 6 for type 2; for type 3 it shall not contain more alpha values than there are palette entries. Ignored.	2,3
+11.3.1.1#partial-palette	11.3.1.1	may	datastream	none	A tRNS chunk may contain fewer values than there are palette entries; the alpha value for all remaining palette entries is assumed to be 255. (Zero values is fewer and is accepted.)	2,3
+11.3.1.1#mask	11.3.1.1	must	decoder	none	If the image bit depth is less than 16, the least significant bits are used. Encoders should set the other bits to 0, and decoders must mask the other bits to 0 before the value is used. Reached for a tRNS sample with bits above the bit depth. Edition 2: "the least significant bits are used and the others are 0", read as the same instruction.	2,3
+11.3.1.1#applied	11.3.1.1	shall	decoder	none	Pixels of the specified grey or RGB sample value are treated as transparent (alpha 0), all others fully opaque; palette pixels take the tRNS alpha of their index. Reached when tRNS makes at least one pixel non-opaque.	2,3
+15.3.3#trns-both-bytes	15.3.3, 11.3.1.1	shall	decoder	none	When processing 16-bit greyscale or truecolour data in the tRNS chunk, both bytes of the sample values are evaluated to determine whether a pixel is transparent.	2,3
+13.12#exact-compare	13.12	shall	decoder	none	When comparing pixel values to tRNS chunk values to detect transparent pixels, the comparison shall be done exactly, before any rescaling. Reached for tRNS on greyscale below 8 bits.	2,3
+13.2#known-length	13.2	should	decoder	recover	For known-length chunks, decoders should treat an unexpected chunk length as an error; an unexpected value in an ancillary chunk can be handled by ignoring the whole chunk (cHRM 32, gAMA 4, sRGB 1, cICP 4, mDCV 24, cLLI 8, pHYs 9, tIME 7; sBIT and bKGD by colour type).	2,3
+11.3.2.1#chrm	11.3.2.1	note	datastream	none	cHRM: eight four-byte chromaticity values. Reached for a well-formed cHRM.	2,3
+11.3.2.2#gama	11.3.2.2	note	datastream	none	gAMA: the gamma value times 100000. Reached for a well-formed gAMA.	2,3
+11.3.2.2#zero	13.13	should	decoder	recover	A gAMA chunk containing zero is meaningless but could appear by mistake. Decoders should ignore it.	2,3
+11.3.2.3#iccp	11.3.2.3	note	datastream	none	iCCP: profile name, null, compression method 0, zlib-compressed ICC profile. Reached for a well-formed iCCP.	2,3
+11.3.2.3#separator	11.3.2.3	shall	datastream	recover	iCCP: Profile name 1-79 bytes, Null separator, Compression method 1 byte, Compressed profile. Missing separator or method byte: ignored.	2,3
+11.3.2.3#method	11.3.2.3	shall	datastream	recover	The only compression method defined in this specification is method 0. Ignored otherwise.	2,3
+11.3.2.3#zlib	11.3.2.3, 10.3	shall	datastream	recover	The compressed profile is a zlib datastream with deflate compression (RFC 1950/1951, checked by inflate.py); invalid, truncated or followed by extra bytes: ignored.	2,3
+11.3.2.3#profile	11.3.2.3	shall	datastream	recover	Decompression of this datastream yields the embedded ICC profile (ICC.1): the header's profile size equals the profile's, the file signature is acsp, and the tag table and every tag's data lie within the profile. Reference: ignored otherwise; tag contents are not examined.	2,3
+11.3.2.3#colour-space	11.3.2.3	shall	datastream	recover	The colour space of the ICC profile shall be an RGB colour space for colour images (colour types 2, 3 and 6), or a greyscale colour space for greyscale images (colour types 0 and 4). Checked on the ICC header colour space signature; ignored otherwise.	2,3
+11.3.2.4#sbit	11.3.2.4	note	datastream	none	sBIT: one byte per channel. Reached for a well-formed sBIT.	2,3
+11.3.2.4#range	11.3.2.4	shall	datastream	recover	Each depth specified in sBIT shall be greater than zero and less than or equal to the sample depth (which is 8 for indexed-colour images, and the bit depth given in IHDR for other colour types). Ignored otherwise.	2,3
+11.3.2.5#srgb	11.3.2.5	note	datastream	none	sRGB: one byte, rendering intent. Reached for a well-formed sRGB.	2,3
+11.3.2.5#intent	11.3.2.5	shall	datastream	recover	Rendering intent: only the values 0 to 3 shall be used. Ignored otherwise.	2,3
+11.3.2.5#compat-values	11.3.2.5 (2nd ed. 11.3.3.5)	shall	datastream	recover	A gAMA or cHRM written with sRGB: only the values of Table 17 shall be used (gAMA 45455; cHRM 31270 32900 64000 33000 30000 60000 15000 6000). Decoders that use sRGB ignore both chunks.	2,3
+11.3.2.6#cicp	11.3.2.6	note	datastream	none	cICP: colour primaries, transfer function, matrix coefficients, video full range flag. Reached for a well-formed cICP.	3
+11.3.2.6#matrix	11.3.2.6	shall	datastream	recover	RGB is currently the only supported colour model in PNG, and as such Matrix Coefficients shall be set to 0. Ignored otherwise.	3
+11.3.2.6#full-range	11.3.2.6	shall	datastream	recover	Each field corresponds to the parameter of the same name in ITU-T H.273, where VideoFullRangeFlag is a one-bit flag (0 or 1). Ignored otherwise.	3
+11.3.2.7#mdcv	11.3.2.7	note	datastream	none	mDCV: 24 bytes of mastering display colour volume. Reached for a well-formed mDCV.	3
+11.3.2.7#with-cicp	11.3.2.7	must	datastream	recover	A cICP chunk must accompany the use of mDCV in order to establish the basic characteristics of the image content.	3
+11.3.2.8#clli	11.3.2.8	note	datastream	none	cLLI: MaxCLL and MaxFALL, four bytes each. Reached for a well-formed cLLI.	3
+11.3.3.1#keyword-length	11.3.3.1, 11.3.2.3, 11.3.4.4	shall	datastream	recover	Keywords are restricted to 1 to 79 bytes in length (also iCCP profile names and sPLT palette names). The chunk is ignored.	2,3
+11.3.3.1#keyword-latin1	11.3.3.1, 11.3.2.3, 11.3.4.4	shall	datastream	recover	Keywords shall contain only printable Latin-1 characters and spaces; that is, only code points 0x20-7E and 0xA1-FF are allowed (also iCCP profile names and sPLT palette names). The chunk is ignored.	2,3
+11.3.3.1#keyword-spaces	11.3.3.1, 11.3.2.3, 11.3.4.4	shall	datastream	recover	Leading spaces, trailing spaces, and consecutive spaces are not permitted in keywords (also iCCP profile names and sPLT palette names). The chunk is ignored.	2,3
+11.3.3.2#text	11.3.3.2	note	datastream	none	tEXt: keyword, null separator, Latin-1 text. Reached for a well-formed tEXt.	2,3
+11.3.3.2#separator	11.3.3.2	shall	datastream	recover	The keyword and text string are separated by a zero byte (null character). Ignored otherwise.	2,3
+11.3.3.2#null	11.3.3.2	shall	datastream	recover	Neither the keyword nor the text string may contain a null character. Ignored otherwise.	2,3
+11.3.3.2#latin1	11.3.3.1	shall	datastream	recover	tEXt and zTXt content is restricted to the printable Latin-1 character set plus U+000A LINE FEED (edition 2: the Latin-1 character set plus the linefeed character); checked as 0A, 20-7E, A0-FF. Ignored otherwise.	2,3
+11.3.3.3#ztxt	11.3.3.3	note	datastream	none	zTXt: keyword, null, compression method 0, zlib-compressed Latin-1 text. Reached for a well-formed zTXt.	2,3
+11.3.3.3#separator	11.3.3.3	shall	datastream	recover	zTXt: Keyword 1-79 bytes, Null separator, Compression method 1 byte, Compressed text datastream. Missing separator or method byte: ignored.	2,3
+11.3.3.3#method	11.3.3.3	shall	datastream	recover	The only compression method value defined is 0 (deflate compression). Ignored otherwise.	2,3
+11.3.3.3#zlib	11.3.3.3, 10.3	shall	datastream	recover	The compressed text is a zlib datastream with deflate compression (checked by inflate.py); invalid, truncated or followed by extra bytes: ignored.	2,3
+11.3.3.3#null	11.3.3.3, 11.3.3.2	shall	datastream	recover	Decompression yields text identical to that of an equivalent tEXt chunk, which may not contain a null character. Ignored otherwise.	2,3
+11.3.3.3#latin1	11.3.3.1, 11.3.3.3	shall	datastream	recover	As 11.3.3.2#latin1, for the decompressed zTXt text.	2,3
+11.3.3.4#itxt	11.3.3.4	note	datastream	none	iTXt: keyword, null, compression flag, compression method, language tag, null, translated keyword, null, UTF-8 text. Reached for a well-formed iTXt.	2,3
+11.3.3.4#separators	11.3.3.4	shall	datastream	recover	iTXt holds a keyword and null separator, compression flag and method bytes, then a language tag and translated keyword each ended by a null separator. Missing: ignored.	2,3
+11.3.3.4#flag	11.3.3.4	shall	datastream	recover	The compression flag is 0 for uncompressed text, 1 for compressed text. Ignored otherwise.	2,3
+11.3.3.4#method	11.3.3.4	shall	datastream	recover	For compressed text, the only compression method defined is 0. Ignored otherwise.	2,3
+11.3.3.4#method-ignored	11.3.3.4	shall	decoder	none	For uncompressed text, encoders shall set the compression method to 0, and decoders shall ignore it. Reached for an uncompressed iTXt with a nonzero method byte.	2,3
+11.3.3.4#language	11.3.3.4	must	datastream	recover	The language tag is a well-formed language tag: edition 3 BCP 47 (RFC 5646 2.1 ABNF, including the grandfathered tags), edition 2 RFC 3066 (a 1-8 letter primary subtag, then 1-8 letter-or-digit subtags). Registry membership is not checked. Reference: the chunk is ignored otherwise.	2,3
+11.3.3.4#zlib	11.3.3.4, 10.3	shall	datastream	recover	Compressed iTXt text is a zlib datastream with deflate compression (checked by inflate.py); invalid, truncated or followed by extra bytes: ignored.	2,3
+11.3.3.4#utf8	11.3.3.4	shall	datastream	recover	The translated keyword and text both use the UTF-8 encoding (RFC 3629). Ignored otherwise.	2,3
+11.3.3.4#null	11.3.3.4	shall	datastream	recover	Neither the translated keyword nor the text shall contain a zero byte (null character). Ignored otherwise.	2,3
+11.3.4.1#bkgd	11.3.4.1	note	datastream	none	bKGD: 2, 6 or 1 bytes by colour type. Reached for a well-formed bKGD.	2,3
+11.3.4.1#index	11.3.4.1	shall	datastream	recover	For colour type 3, the value is the palette index of the colour to be used as background; an index past the palette is ignored.	2,3
+11.3.4.1#mask	11.3.4.1	must	decoder	none	If the image bit depth is less than 16, the least significant bits are used. Encoders should set the other bits to 0, and decoders must mask the other bits to 0 before the value is used. Reached for a bKGD sample with bits above the bit depth. Edition 2: "the least significant bits are used and the others are 0", read as the same instruction.	2,3
+11.3.4.2#hist	11.3.4.2	note	datastream	none	hIST: one two-byte frequency per palette entry. Reached for a well-formed hIST.	2,3
+11.3.4.2#entries	11.3.4.2	shall	datastream	recover	There shall be exactly one entry for each entry in the PLTE chunk. Ignored otherwise (including when there is no PLTE).	2,3
+11.3.4.2#nonzero	11.3.4.2	shall	datastream	recover	A histogram entry shall be nonzero if there are any pixels of that colour. Checked for colour type 3 after decoding.	2,3
+11.3.4.3#phys	11.3.4.3	note	datastream	none	pHYs: pixels per unit X and Y, unit specifier. Reached for a well-formed pHYs.	2,3
+11.3.4.3#unit	11.3.4.3	shall	datastream	recover	Unit specifier values: 0 unit is unknown, 1 unit is the metre. Ignored otherwise.	2,3
+11.3.4.4#splt	11.3.4.4	note	datastream	none	sPLT: palette name, null, sample depth, entries. Reached for a well-formed sPLT.	2,3
+11.3.4.4#separator	11.3.4.4	shall	datastream	recover	sPLT: Palette name 1-79 bytes, Null separator, Sample depth 1 byte, entries. Missing separator or depth byte: ignored.	2,3
+11.3.4.4#unique-name	11.3.4.4	shall	datastream	recover	Multiple sPLT chunks are permitted, but each shall have a different palette name. The later chunk is ignored.	2,3
+11.3.4.4#depth	11.3.4.4	shall	datastream	recover	The sPLT sample depth shall be 8 or 16. Ignored otherwise.	2,3
+11.3.4.4#length	11.3.4.4	shall	datastream	recover	The length after the sample depth byte shall be divisible by 6 if the sPLT sample depth is 8, or by 10 if it is 16. Ignored otherwise.	2,3
+11.3.4.4#order	11.3.4.4	shall	datastream	recover	Entries shall appear in decreasing order of frequency (equal frequencies accepted). Ignored otherwise.	2,3
+11.3.4.5#exif	11.3.4.5	note	datastream	none	eXIf: an Exif profile (TIFF structure). Reached for an eXIf with a TIFF header.	3
+11.3.4.5#header	11.3.4.5.2, 13.3	should	decoder	recover	Decoders should check the first four bytes to ensure that they have the hexadecimal values 49 49 2A 00 or 4D 4D 00 2A. Ignored otherwise. (Pointers inside the profile are not followed.)	3
+11.3.4.5#structure	11.3.4.5	shall	datastream	recover	The eXIf chunk contains an Exif profile: TIFF framing (TIFF 6.0 section 2), an 8-byte header whose first-IFD offset lies in the data, and that IFD's entry count, entries and next-IFD offset within it. Reference: ignored otherwise.	3
+11.3.5.1#time	11.3.5.1	note	datastream	none	tIME: year, month, day, hour, minute, second. Reached for a well-formed tIME.	2,3
+11.3.5.1#range	11.3.5.1	shall	datastream	recover	Month 1-12, Day 1-31, Hour 0-23, Minute 0-59, Second 0-60 (to allow for leap seconds). Ignored otherwise.	2,3
+11.3.6.1#actl	11.3.6.1	note	datastream	none	acTL: num_frames, num_plays. Reached for an acTL before IDAT.	3
+11.3.6.1#length	11.3.6.1, 13.2	must	datastream	still	acTL is 8 bytes (two four-byte unsigned integers). Ignored; the static image is decoded.	3
+11.3.6.1#before-idat	11.3.6.1, 5.6	must	datastream	still	The acTL chunk must appear before the first IDAT chunk within a valid PNG stream. Ignored; the static image is decoded.	3
+11.3.6.1#missing	4.9.1	must	datastream	still	To be recognized as an APNG, an acTL chunk must appear in the stream before any IDAT chunks. fcTL or fdAT without one: the static image is decoded.	3
+11.3.6.1#num-frames-zero	11.3.6.1	must	datastream	still	num_frames: 0 is not a valid value.	3
+11.3.6.1#num-frames	11.3.6.1	must	datastream	still	num_frames must equal the number of fcTL chunks; if this value does not equal the actual number of frames it should be treated as an error.	3
+11.3.6.2#fctl	11.3.6.2	note	datastream	none	fcTL: sequence number, frame dimensions and offset, delay, dispose_op, blend_op. Reached for an fcTL with nonzero dimensions.	3
+11.3.6.2#length	11.3.6.2, 13.2	must	datastream	still	fcTL is 26 bytes. Ignored; the static image is decoded.	3
+11.3.6.2#one-before-idat	5.6 Table 7	shall	datastream	still	fcTL: One may occur before IDAT; all others shall be after IDAT.	3
+11.3.6.2#dimensions	11.3.6.2	must	datastream	still	width and height must be greater than zero.	3
+11.3.6.2#region	11.3.6.2	must	datastream	still	x_offset plus width must not be greater than the IHDR width; similarly y_offset plus height must not be greater than the IHDR height.	3
+11.3.6.2#dispose-op	11.3.6.2	must	datastream	still	Valid values for dispose_op are 0, 1 and 2.	3
+11.3.6.2#blend-op	11.3.6.2	must	datastream	still	Valid values for blend_op are 0 and 1.	3
+11.3.6.2#default-image	11.3.6.2	must	datastream	still	The fcTL chunk corresponding to the default image: the x_offset and y_offset fields must be 0; the width and height fields must equal the corresponding fields from the IHDR chunk.	3
+11.3.6.3#fdat	11.3.6.3	note	datastream	none	fdAT: sequence number and frame data, for a frame introduced by an fcTL after IDAT. Reached for such an fdAT.	3
+11.3.6.3#after-idat	5.6 Table 7	shall	datastream	still	fdAT: After IDAT. Ignored; the static image is decoded.	3
+11.3.6.3#length	11.3.6.3	must	datastream	still	Because of the sequence number, fdAT chunks may not be of zero length; the sequence number is 4 bytes.	3
+11.3.6.3#needs-fctl	11.3.6.3, 11.3.6.2	must	datastream	still	Exactly one fcTL chunk is required for each frame: an fdAT not preceded (after IDAT) by an fcTL belongs to no frame.	3
+11.3.6.3#frame-data	11.3.6.3	must	datastream	still	At least one fdAT chunk is required for each frame, except for the first frame, if that frame is represented by an IDAT chunk.	3
+4.9.2#sequence-numbers	4.9.2, 13.1	shall	datastream	still	The first fcTL chunk shall contain sequence number 0, and the sequence numbers in the remaining fcTL and fdAT chunks shall be in ascending order, with no gaps or duplicates; decoders shall treat out-of-order APNG chunks as an error.	3
+4.9.2#sequence-in-order	4.9.2	shall	datastream	none	As 4.9.2#sequence-numbers: reached when the fcTL and fdAT sequence numbers are 0, 1, 2, ... in datastream order.	3
+4.9.1#static-image-first-frame	4.9.1	note	decoder	none	The static image may be included as the first frame of the animation by the presence of a single fcTL chunk before IDAT.	3
+4.9.1#static-image-not-in-animation	4.9.1	note	decoder	none	Otherwise (no fcTL before IDAT), the static image is not part of the animation.	3
+13.1#apng-fallback	13.1	should	decoder	none	A decoder which detects an error before the animation has started should display the static image. Reached when any APNG fault was found.	3
+13.1#recover	13.1	should	decoder	none	Detect errors as early as possible, recover from an error if possible, otherwise fail gracefully. (Not emitted: the philosophy behind every recover/either policy.)	2,3
+rfc1950-2.2#end-in-header	RFC 1950 2.2	must	datastream	either	A zlib stream has the structure CMF, FLG, [DICTID], compressed data, ADLER32: input ending inside the two header bytes. In IDAT this leaves no image data (13.1#data-short).	2,3
+rfc1950-2.2#cm	RFC 1950 2.2, 2.3	must	decoder	reject	CM = 8 denotes the deflate compression method. A compliant decompressor must give an error indication if CM is not one of the values defined (only the value 8 is permitted). (For IDAT 10.1#zlib-method is checked first; reachable from zTXt, iCCP, iTXt.)	2,3
+rfc1950-2.2#cinfo	RFC 1950 2.2	must	datastream	reject	Values of CINFO above 7 are not allowed in this version of the specification. (For IDAT 10.1#zlib-method is checked first; reachable from zTXt, iCCP, iTXt.)	2,3
+rfc1950-2.2#cinfo-small	RFC 1950 2.2	note	datastream	none	CINFO is the base-2 logarithm of the LZ77 window size, minus eight. Reached for a declared window smaller than 32K.	2,3
+rfc1950-2.2#window-exceeded	RFC 1950 2.2	note	decoder	either	A distance reaches further back than the window CINFO declares (but within 32768). RFC 1950 gives no decompressor rule; zlib accepts it unless built with INFLATE_STRICT, libpng's sized window refuses it. Reference: decoded.	2,3
+rfc1950-2.2#fcheck	RFC 1950 2.2, 2.3	must	datastream	reject	The FCHECK value must be such that CMF and FLG, when viewed as a 16-bit unsigned integer stored in MSB order (CMF*256 + FLG), is a multiple of 31.	2,3
+rfc1950-2.3#fdict	RFC 1950 2.3	must	decoder	reject	When the other format does not use the preset dictionary feature, a compliant decompressor must reject any stream in which the FDICT flag is set. (For IDAT 10.1#no-preset-dictionary is checked first; reachable from zTXt, iCCP, iTXt.)	2,3
+rfc1950-2.2#end-in-adler32	RFC 1950 2.2	must	datastream	either	The compressed data is followed by ADLER32: input ending before all four bytes. In IDAT, recovered when the image data is complete (10.1#zlib-check).	2,3
+rfc1950-2.3#adler32	RFC 1950 2.2, 2.3	must	decoder	reject	ADLER32 contains a checksum value of the uncompressed data. A compliant decompressor must check CMF, FLG, and ADLER32, and provide an error indication if any of these have incorrect values.	2,3
+rfc1951-3.2.2#over-subscribed	RFC 1951 3.2.2	must	datastream	reject	The Huffman code for an alphabet is defined by the bit lengths of its codes; lengths that assign more codes than the bit widths hold define no prefix code.	2,3
+rfc1951-3.2.2#incomplete	RFC 1951 3.2.2, 3.2.7	note	datastream	either	The codes are Huffman codes; the RFC describes only two incomplete ones: a single distance code of one bit, and no distance codes. Reference: any other incomplete code (code-length, literal/length, or distance) is rejected, as zlib does; a lone one-bit literal/length code is accepted (rfc1951-3.2.2#one-literal-code).	2,3
+rfc1951-3.2.2#one-literal-code	RFC 1951 3.2.2, 3.2.7	note	datastream	either	A literal/length code holding a single one-bit code (an empty block's end-of-block) is incomplete; the RFC describes no such code, zlib (inftrees.c) and puff.c accept it. Reference: decoded, with a warning.	2,3
+rfc1951-3.2.2#unassigned-code	RFC 1951 3.2.2, 3.2.7	must	datastream	reject	Codes that are never used (which have a bit length of zero) must not be assigned a value: the input holds a bit pattern that is no code (the unused half of a one-bit distance code, or any distance when there are none).	2,3
+rfc1951-3.2.3#btype-reserved	RFC 1951 3.2.3	must	datastream	reject	BTYPE 11 - reserved (error).	2,3
+rfc1951-3.2.3#end-of-input	RFC 1951 3.2.3, 1.4	must	datastream	either	Blocks follow until one with BFINAL set ends: input ending before the final block does. In IDAT, recovered when the image data is complete (10.1#zlib-check).	2,3
+rfc1951-3.2.3#multiple-blocks	RFC 1951 3.2.3	note	datastream	none	A compressed data set consists of a series of blocks. Reached for more than one block.	2,3
+rfc1951-3.2.3#empty-block	RFC 1951 3.2.3	note	datastream	none	A block of any type may produce no output (stored LEN 0, or only the end-of-block code). Reached for such a block.	2,3
+rfc1951-3.2.3#cross-block	RFC 1951 3.2.3	must	decoder	none	A duplicated string reference may refer to a string in a previous block; i.e., the backward distance may cross one or more block boundaries.	2,3
+rfc1951-3.2.3#overlap	RFC 1951 3.2.3	must	decoder	none	The referenced string may overlap the current position (distance less than length).	2,3
+rfc1951-3.2.3#distance-too-far	RFC 1951 3.2.3	must	datastream	reject	A distance cannot refer past the beginning of the output stream.	2,3
+rfc1951-3.2.4#stored	RFC 1951 3.2.4	note	datastream	none	Non-compressed block (BTYPE=00): bits up to the next byte boundary are ignored, then LEN, NLEN and LEN literal bytes.	2,3
+rfc1951-3.2.4#nlen	RFC 1951 3.2.4	must	datastream	reject	LEN is the number of data bytes in the block. NLEN is the one's complement of LEN.	2,3
+rfc1951-3.2.5#length-range	RFC 1951 3.2.5	must	datastream	either	Length code 284 with 5 extra bits covers lengths 227-257; extra bits 31 would give 258, which the table does not list (258 is code 285). zlib accepts it. Reference: rejected.	2,3
+rfc1951-3.2.5#distance-30-31	RFC 1951 3.2.5, 3.2.6	must	datastream	reject	Distance codes 0-29 are defined; distance codes 30-31 will never actually occur in the compressed data (they may still have code lengths, see rfc1951-3.2.7#hdist-over-30).	2,3
+rfc1951-3.2.6#fixed	RFC 1951 3.2.6	note	datastream	none	Compression with fixed Huffman codes (BTYPE=01).	2,3
+rfc1951-3.2.6#literal-286-287	RFC 1951 3.2.6	must	datastream	reject	Literal/length values 286-287 will never actually occur in the compressed data, but participate in the code construction.	2,3
+rfc1951-3.2.7#dynamic	RFC 1951 3.2.7	note	datastream	none	Compression with dynamic Huffman codes (BTYPE=10).	2,3
+rfc1951-3.2.7#hlit	RFC 1951 3.2.7	must	datastream	reject	5 Bits: HLIT, # of Literal/Length codes - 257 (257 - 286). HLIT 30 or 31 (287 or 288 codes) is out of range.	2,3
+rfc1951-3.2.7#hdist-over-30	RFC 1951 3.2.7, 3.3	must	decoder	none	5 Bits: HDIST, # of Distance codes - 1 (1 - 32); a compliant decompressor must accept the full range of possible values. Reached for HDIST giving 31 or 32 codes (zlib refuses these: 'too many length or distance symbols').	2,3
+rfc1951-3.2.7#repeat-without-previous	RFC 1951 3.2.7	must	datastream	reject	16: Copy the previous code length 3 - 6 times: there is no previous code length for the first one.	2,3
+rfc1951-3.2.7#repeat-overflow	RFC 1951 3.2.7	must	datastream	reject	All code lengths form a single sequence of HLIT + HDIST + 258 values: a repeat running past its end.	2,3
+rfc1951-3.2.7#repeat-crosses	RFC 1951 3.2.7	must	decoder	none	The code length repeat codes can cross from HLIT + 257 to the HDIST + 1 code lengths.	2,3
+rfc1951-3.2.7#end-of-block-code	RFC 1951 3.2.7	must	datastream	reject	The literal/length symbol 256 (end of data), encoded using the literal/length Huffman code: symbol 256 needs a nonzero code length.	2,3
+rfc1951-3.2.7#one-distance-code	RFC 1951 3.2.7	must	decoder	none	If only one distance code is used, it is encoded using one bit, not zero bits; in this case there is a single code length of one, with one unused code.	2,3
+rfc1951-3.2.7#no-distance-codes	RFC 1951 3.2.7	must	decoder	none	One distance code of zero bits means that there are no distance codes used at all (the data is all literals).	2,3

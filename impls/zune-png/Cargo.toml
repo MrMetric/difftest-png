@@ -1,0 +1,8 @@
+[package]
+name = "zune-png-shim"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zune-core = "0.5.3"
+zune-png = "0.5.2"

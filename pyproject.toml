@@ -1,0 +1,17 @@
+[project]
+name = "difftest-png"
+version = "0.1.0"
+description = "PNG implementation conformance suite and differential comparison"
+requires-python = ">=3.14"
+dependencies = [
+	"minify-html==0.18.1",
+	"numpy>=2",
+	"pillow==13.0.0",
+	"pypng==0.20220715.0",
+]
+
+[project.optional-dependencies]
+opencv = ["opencv-python-headless==5.0.0.93"]
+
+[tool.uv]
+package = false

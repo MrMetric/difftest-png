@@ -1,0 +1,10 @@
+{
+  "name": "png-decoder-shims",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "fast-png": "*",
+    "pngjs": "*",
+    "upng-js": "*"
+  }
+}
