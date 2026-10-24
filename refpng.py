@@ -907,8 +907,12 @@ CHUNKS = {
 	b"sBIT": Chunk(_sbit, layout(("depths", Repeat(BYTE, lambda p: {0: 1, 2: 3, 3: 3, 4: 2, 6: 4}[p.d.ctype])))),
 	# 11.3.2.5 rendering intent: "Only the following values shall be used" (0..3).
 	b"sRGB": Chunk(_srgb, layout(("intent", enum(range(4), "11.3.2.5#intent")))),
-	# 11.3.2.6 "Matrix Coefficients shall be set to 0"; H.273 VideoFullRangeFlag is a one-bit flag.
-	b"cICP": Chunk(_cicp, layout(("primaries", BYTE), ("transfer", BYTE),
+	# 11.3.2.6 "Each of the fields of the cICP chunk corresponds to the parameter of the same name in [ITU-T-H.273]";
+	# H.273 (07/2024) 3.6: reserved code points "shall not be used in identifiers conforming to this version".
+	# "Matrix Coefficients shall be set to 0"; H.273 VideoFullRangeFlag is a one-bit flag.
+	b"cICP": Chunk(_cicp, layout(
+		("primaries", enum((1, 2, *range(4, 13), 22), "11.3.2.6#primaries")),  # H.273 Table 2
+		("transfer", enum((1, 2, *range(4, 19)), "11.3.2.6#transfer")),  # H.273 Table 3
 		("matrix", enum((0,), "11.3.2.6#matrix")), ("full_range", enum((0, 1), "11.3.2.6#full-range")))),
 	# 11.3.2.7: eight two-byte chromaticities, then two four-byte luminances.
 	b"mDCV": Chunk(_mdcv, layout(("chromaticities", Repeat(UINT16, 8)), ("maximum", UINT31), ("minimum", UINT31))),

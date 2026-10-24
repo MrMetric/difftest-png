@@ -117,6 +117,12 @@ values", and that range goes up to 32. Every decoder built on zlib fails this te
 A chunk's type and position are checked before its CRC, so a bad CRC can't hide a second
 IHDR.
 
+cICP's fields take their values from ITU-T H.273 (07/2024), which says its reserved code points
+"shall not be used". A cICP chunk that uses one has an unexpected value in a known ancillary
+chunk. Section 13.2 recommends ignoring such a chunk but doesn't require it, so a decoder may
+reject the file, though it shouldn't. A decoder that shows the image must produce the same
+pixels as it would for the file without the cICP chunk.
+
 Validators like pngcheck are judged on whether the file conforms to the specification, which
 isn't the same as whether a decoder must decode it. A chunk name with the reserved bit set is
 the clearest case: decoders must ignore the chunk and show the image, but the spec says the

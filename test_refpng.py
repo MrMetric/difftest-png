@@ -601,7 +601,8 @@ def main():
 		test_exit_paths, test_content_types, test_owner_policies, test_small_pixels, test_independent_chunk_faults,
 		test_value_then_layout_fault, test_dependent_choice, test_dependent_count, test_dependent_compression,
 		test_embedded_value_faults, test_fault_classification_and_dispatch,
-		test_hdist_policy, test_corrupt_image_tail, test_structure_before_crc, test_diagnostic_severity):
+		test_hdist_policy, test_corrupt_image_tail, test_structure_before_crc, test_diagnostic_severity,
+		test_cicp_code_points):
 		test()
 		print(test.__name__ + ": passed", flush=True)
 	if args.manifest:
@@ -858,6 +859,32 @@ def test_diagnostic_severity():
 				assert not record.events and record.fault_count == 0
 			else:
 				assert consequence in kinds, ("mis-severity accepted", id, level, consequence)
+
+
+
+
+def test_cicp_code_points():
+	"""Every ColourPrimaries and TransferCharacteristics value, against H.273 (07/2024) Tables 2 and 3."""
+	import expect
+	reserved = {
+		"11.3.2.6#primaries": {0, 3, *range(13, 22), *range(23, 256)},
+		"11.3.2.6#transfer": {0, 3, *range(19, 256)},
+	}
+	for clause, bad in reserved.items():
+		for value in range(256):
+			fields = (value, 1, 0, 1) if clause.endswith("primaries") else (1, value, 0, 1)
+			data = png(((b"cICP", bytes(fields)),))
+			check(data, 2, clean=True)  # 2nd edition: an unknown ancillary chunk
+			if value in bad:
+				_, record = check(data, 3, warning=clause)
+				assert "11.3.2.6#cicp" not in record.reached, "a cICP with a reserved code point is ignored"
+				assert expect.outcomes({"verdict": "accept", "stdout": stdout(record), "detail": ""}, CONSEQUENCES) == "pixels=pass,reject=should"
+			else:
+				_, record = check(data, 3, clean=True)
+				assert "11.3.2.6#cicp" in record.reached
+	# Both fields reserved: both faults are reported, and the chunk is still ignored.
+	_, record = check(png(((b"cICP", bytes((200, 200, 0, 1))),)), 3)
+	assert {id for id, _ in record.warnings} == {"11.3.2.6#primaries", "11.3.2.6#transfer"}, record.warnings
 
 
 if __name__ == "__main__":
