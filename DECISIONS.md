@@ -6,7 +6,8 @@ rules, start here.
 ## Scope
 
 The report is meant to help someone choose a PNG library, or find out how far they can trust
-the one they already use. Bug reports to upstream projects are out of scope.
+the one they already use. Bug reports to upstream projects are out of scope, though the hope is
+that showing the mess plainly helps get some of it cleaned up.
 
 Only decoders are tested for now. APNG support comes next, then colour management, then
 encoders, which will get their own `encode/` directory. Performance isn't measured at all: the
@@ -133,8 +134,18 @@ ImageIO sometimes does, has a bug.
 
 Otherwise the naming rules hold. A file with a public chunk that neither the spec nor the
 registry defines doesn't conform, and neither does a chunk name with the reserved bit set. iDOT
-and the APNG chunks are the only exceptions. A validator may follow either edition's reading,
-and the report says which, as it does for decoders.
+(under the third edition) and the APNG chunks are the only exceptions. A validator may follow
+either edition's reading, and the report says which, as it does for decoders.
+
+eXIf counts as a second-edition chunk too, since the registry added it in 2017. People reading
+this report care about what software does today, not about what it did before eXIf existed.
+
+An iDOT chunk only conforms if it actually works. Its segments have to cover the image's rows in
+order. Each offset has to point at the IDAT chunk where its segment starts. And each segment has
+to be decodable on its own: its compressed data starts on a byte-aligned block boundary, nothing
+after that point refers back to data before it, and its first row isn't filtered against the
+previous segment's last row. A stale iDOT is the most common way this goes wrong, for instance
+after a tool rewrites the IDAT chunks. A validator that checks iDOT at all should flag it.
 
 Validators like pngcheck are judged on whether the file conforms to the specification, which
 isn't the same as whether a decoder must decode it. A chunk name with the reserved bit set is
