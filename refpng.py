@@ -239,8 +239,7 @@ def _crc(d: _State, ctype: bytes, body: bytes, stored: int) -> bool:
 		d.require(ignorable, "13.1#crc-critical", f"CRC mismatch on critical chunk {ctype.decode()}")
 		d.expect(False, "13.1#crc-critical", f"CRC mismatch on {ctype.decode()}" + ("; chunk dropped" if ctype == b"PLTE" else ""))
 		return ctype == b"IEND"
-	clause = CHUNKS[ctype].crc_clause if ctype in CHUNKS and (d.edition == 3 or ctype not in EDITION3_CHUNKS) else "13.1#crc-ancillary"
-	d.expect(False, clause, f"CRC mismatch on ancillary chunk {ctype.decode()}; chunk dropped")
+	d.expect(False, "13.1#crc-ancillary", f"CRC mismatch on ancillary chunk {ctype.decode()}; chunk dropped")
 	return False
 
 
@@ -956,7 +955,6 @@ def _idot_segments(d: _State):
 class Chunk:
 	handler: object
 	layout: object
-	crc_clause: str = "13.1#crc-ancillary"
 
 
 def layout(*fields, clause="13.2#known-length"):
@@ -1038,7 +1036,7 @@ CHUNKS = {
 		("segments", Repeat(Struct((("first", AppleUInt32()), ("rows", AppleUInt32()), ("offset", AppleUInt32()))), lambda p: p.values["count"])),
 		# Owner: "image not interlaced".
 		("interlace", Rule(lambda p: not p.d.interlace, "idot#interlace", "iDOT image is interlaced")),
-		clause="idot#layout"), crc_clause="idot#crc"),
+		clause="idot#layout")),
 	b"IHDR": Chunk(_ihdr, layout(
 		("width", UInt(4, "11.2.1#dimensions-range")), ("height", UInt(4, "11.2.1#dimensions-range")),
 		("depth", enum((1, 2, 4, 8, 16), "11.2.1#bit-depth")),

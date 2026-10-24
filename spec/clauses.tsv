@@ -252,7 +252,6 @@ idot#rows	Owner policy (DECISIONS.md), Apple iDOT	shall	datastream	unaffected	Se
 idot#offsets	Owner policy (DECISIONS.md), Apple iDOT	shall	datastream	unaffected	Offsets relative to the iDOT length field increase, land on IDAT chunk starts, and segment 0 points to the first IDAT.	3
 idot#independence	Owner policy (DECISIONS.md), Apple iDOT	shall	datastream	unaffected	Each later segment starts at a byte-aligned DEFLATE block boundary with exactly the preceding rows decoded; no later back-reference reaches before that segment.	3
 idot#filter	Owner policy (DECISIONS.md), Apple iDOT	shall	datastream	unaffected	The first row of each later segment must not use Up, Average or Paeth: it cannot depend on the previous row.	3
-idot#crc	Owner policy (DECISIONS.md), Apple iDOT	shall	datastream	unaffected	iDOT CRC covers its type and data, as for all chunks; iDOT faults never affect decoder pixels or acceptance.	3
 ext-4.4#disposal	Extensions 1.6.1 section 4.4; GIF89a 23	shall	datastream	recover	Disposal Method is the GIF89a field: defined values 0-3; 4-7 are reserved for future definition.	2,3
 ext-4.4#input	Extensions 1.6.1 section 4.4; GIF89a 23	shall	datastream	recover	User Input Flag is the GIF89a flag: 0 no user input expected, 1 user input expected.	2,3
 ext-7.1#text	Extensions 1.6.1 section 7.1; GIF89a 25	shall	datastream	recover	Plain Text Data uses 7-bit printable ASCII characters.	2,3

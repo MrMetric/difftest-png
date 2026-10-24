@@ -1034,7 +1034,7 @@ def idot_cases():
 	cases = [("idot#layout", idot_png(body=b"")), ("idot#layout", idot_png(body=struct.pack(">I", 0))),
 		("idot#layout", idot_png(body=b"\0\0\0\2" + bytes(20))),
 		("idot#single", idot_png(duplicate=True)), ("idot#before-idat", idot_png(after=True)),
-		("idot#interlace", idot_png(interlace=1)), ("idot#crc", idot_png(bad_crc=True))]
+		("idot#interlace", idot_png(interlace=1))]
 	# Apple's uint32 fields retain their full range; faults belong to iDOT, never the PNG uint31 rule.
 	for index, clause in ((0, "idot#rows"), (1, "idot#rows"), (2, "idot#offsets")):
 		entry = [0, 1, 40]
@@ -1083,6 +1083,7 @@ def idot_cases():
 
 
 def test_idot():
+	import expect
 	check(idot_png(), clean=True, pixels=(18, 52, 86, 255) * 2)
 	# The length guard rejects large counts before allocating or iterating over entries.
 	check(idot_png(body=struct.pack(">I", 0xffffffff)), warning="idot#layout")
@@ -1092,6 +1093,9 @@ def test_idot():
 		assert tuple(new.samples) == tuple(old.samples), clause
 		assert all(CONSEQUENCES[id] == "unaffected" for id, _ in record.warnings), record.warnings
 		assert outcomes_after_unaffected({"stdout": stdout(record), "verdict": "accept", "detail": ""}) == "pixels=pass"
+	# A bad iDOT CRC is an ordinary ancillary CRC error: decoders may reject or drop the chunk.
+	_, record = check(idot_png(bad_crc=True), warning="13.1#crc-ancillary")
+	assert expect.outcomes({"stdout": stdout(record), "verdict": "accept", "detail": ""}, CONSEQUENCES) == "pixels=pass,reject=pass"
 	# A segment-start Sub filter is independent, even when later rows would use previous-row filters.
 	raw = b"\0\x12\x34\x56" + b"\1\x12\x34\x56"
 	parts = (b"\x78\x01\0\4\0\xfb\xff" + raw[:4], b"\1\4\0\xfb\xff" + raw[4:] + struct.pack(">I", zlib.adler32(raw)))
