@@ -131,6 +131,11 @@ counts as conforming. iDOT exists only to speed up decoding, so a file must alwa
 the same pixels as it would without the chunk. A decoder that rejects such a file, as Apple's
 ImageIO sometimes does, has a bug.
 
+Otherwise the naming rules hold. A file with a public chunk that neither the spec nor the
+registry defines doesn't conform, and neither does a chunk name with the reserved bit set. iDOT
+and the APNG chunks are the only exceptions. A validator may follow either edition's reading,
+and the report says which, as it does for decoders.
+
 Validators like pngcheck are judged on whether the file conforms to the specification, which
 isn't the same as whether a decoder must decode it. A chunk name with the reserved bit set is
 the clearest case: decoders must ignore the chunk and show the image, but the spec says the
