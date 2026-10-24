@@ -10,6 +10,9 @@ A test's allowed outcomes follow from what the reference decoder found in the fi
 decoding it is allowed only if that fault's consequence is `either`); recoverable faults mean
 the expected pixels pass and a rejection is a should-violation; `either` faults allow both; a
 clean file must decode to the expected pixels.
+
+Separately, `conforms2`/`conforms3` say whether the datastream conforms to each edition: the reference
+decodes it and records no fault. Validators are judged on that, not on what a decoder must do.
 """
 import argparse
 import csv
@@ -25,7 +28,7 @@ import pam
 import run
 
 ROOT = Path(__file__).resolve().parent
-FIELDS = ["id", "file", "clause", "reaches", "ed2", "hash2", "ed3", "hash3", "description"]
+FIELDS = ["id", "file", "clause", "reaches", "ed2", "hash2", "conforms2", "ed3", "hash3", "conforms3", "description"]
 
 
 def consequences() -> dict[str, str]:
@@ -67,12 +70,22 @@ def outcomes(raw: dict, cons: dict[str, str]) -> str:
 		assert raw["verdict"] == "reject", f"reference {raw['verdict']}: {raw['detail']}"
 		assert fatal, f"reference rejected without naming a clause: {raw['detail']}"
 		return "reject=pass,accept=pass" if all(cons.get(c) == "either" for c in fatal) else "reject=pass"
-	kinds = {cons.get(c, "recover") for c in recovered}
+	# `unaffected` faults make the datastream non-conforming but leave what a decoder must do unchanged.
+	kinds = {cons.get(c, "recover") for c in recovered} - {"unaffected"}
 	if "either" in kinds:
 		return "pixels=pass,reject=pass"
 	if kinds:
 		return "pixels=pass,reject=should"
 	return "pixels=pass"
+
+
+def conforms(raw: dict) -> str:
+	"""Whether the datastream conforms to the edition: the reference decodes it and records no fault.
+
+	What a decoder must do is a separate question (outcomes): a file can be non-conforming and still have
+	to decode unchanged. Validators are judged on this one."""
+	fatal, recovered = faults(raw["stdout"])
+	return "yes" if raw["verdict"] == "accept" and not fatal and not recovered else "no"
 
 
 def reference_runs(impls: dict[str, run.Impl], file: Path) -> dict[int, dict]:
@@ -88,6 +101,7 @@ def row_for(file: Path, base: Path, impls: dict[str, run.Impl], cons: dict[str, 
 		assert not silent, f"{file.name}: the reference (edition {ed}) reached {sorted(silent)} without reporting them"
 		row[f"ed{ed}"] = outcomes(raw, cons)
 		row[f"hash{ed}"] = raw["image"][0] if raw["image"] else ""
+		row[f"conforms{ed}"] = conforms(raw)
 		reaches |= run.reached_of(raw["stdout"])
 	fatal, recovered = faults(refs[3]["stdout"])
 	row["reaches"] = ",".join(sorted(reaches))
@@ -159,6 +173,8 @@ def main() -> None:
 			r[f"hash{ed}"] = fresh[f"hash{ed}"]
 			if fresh[f"ed{ed}"] != r[f"ed{ed}"]:
 				print(f"{t.id}: edition {ed} outcomes would be {fresh[f'ed{ed}']} (manifest says {r[f'ed{ed}']}; kept)", file=sys.stderr)
+			if fresh[f"conforms{ed}"] != r[f"conforms{ed}"]:
+				print(f"{t.id}: edition {ed} conformance would be {fresh[f'conforms{ed}']} (manifest says {r[f'conforms{ed}']}; kept)", file=sys.stderr)
 		missing = set(t.reaches) - set(fresh["reaches"].split(","))
 		if missing:
 			lost.append(f"{t.id}: no longer reaches {', '.join(sorted(missing))}")

@@ -57,6 +57,10 @@ needs its own toolchain:
   Two kinds of file also accept other pixels, which `run.py` derives with the reference decoder
   at run time and the report marks: an ancillary chunk with a bad CRC used as stored (✓ᶜ),
   and several tRNS chunks with the last one kept (✓ᵗ).
+- `conforms2`, `conforms3`: whether the file conforms to each edition, i.e. the reference decodes
+  it without recording any fault. Validators are judged on this: they must accept exactly the
+  conforming files. It differs from what a decoder must do: a file with a reserved-bit chunk name
+  doesn't conform, but decoders must still display it.
 - `clause`: the clause of `spec/clauses.tsv` the test is about; `reaches`: every clause the
   reference decoder reaches on the file. `run.py` fails if a file stops reaching one of them,
   so an optimizer or a hand edit cannot quietly turn a test into a different test.

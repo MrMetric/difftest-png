@@ -1,7 +1,7 @@
 """Run the PNG test suite against every implementation available here and write the report.
 
 	uv run run.py [impl ...] [--head DIR] [--jobs N] [--no-memcheck] [--no-build] [--out DIR]
-	              [--reuse [--rerun IMPL ...]]
+				  [--reuse [--rerun IMPL ...]]
 
 Implementations come from impls.toml; a column whose program is missing is skipped with a
 notice. Each (implementation, test) runs under address-space, file-size and wall-clock limits;
@@ -69,6 +69,7 @@ class Test:
 	reaches: list[str]
 	allowed: dict[int, dict[str, str]]  # edition -> outcome -> severity
 	hashes: dict[int, list[str]]  # edition -> acceptable canonical RGBA16 digests
+	conforms: dict[int, bool]  # edition -> whether the datastream conforms (what validators are judged on)
 	description: str
 
 
@@ -120,6 +121,7 @@ def load_manifest(path: Path) -> list[Test]:
 				reaches=[c for c in r["reaches"].split(",") if c],
 				allowed={2: parse_outcomes(r["ed2"]), 3: parse_outcomes(r["ed3"])},
 				hashes={2: [h for h in r["hash2"].split("|") if h], 3: [h for h in r["hash3"].split("|") if h]},
+				conforms={ed: {"yes": True, "no": False}[r[f"conforms{ed}"]] for ed in EDITIONS},
 				description=r["description"],
 			))
 	assert len({t.id for t in tests}) == len(tests), "duplicate test ids"
@@ -228,14 +230,10 @@ def visible_equal(a: np.ndarray, b: np.ndarray) -> bool:
 	return np.array_equal(a[shown], b[shown])
 
 
-def validator_allowed(allowed: dict[str, str]) -> dict[str, str]:
-	"""A validator is right to accept a conforming file and to flag a non-conforming one; where the
-	specification leaves the file's status open (every outcome passes), either answer is right."""
-	if allowed == {"pixels": "pass"}:
-		return {"pixels": "pass"}
-	if all(v == "pass" for v in allowed.values()):
-		return {"pixels": "pass", "reject": "pass"}
-	return {"reject": "pass"}
+def validator_allowed(conforms: bool) -> dict[str, str]:
+	"""A validator is judged on whether the datastream conforms, not on what a decoder must do with it:
+	it must accept exactly the conforming files and flag every other one."""
+	return {"pixels": "pass"} if conforms else {"reject": "pass"}
 
 
 def _chunks(data: bytes) -> tuple[list[bytes], bytes] | None:
@@ -322,7 +320,7 @@ def judge(test: Test, impl: Impl, raw: dict, expected: dict[int, tuple | None], 
 				outcome = "pixels" if ok else "wrong"
 				res.update(props)
 		res.setdefault("outcome", {})[ed] = outcome
-		allowed = test.allowed[ed] if impl.pixels else validator_allowed(test.allowed[ed])
+		allowed = test.allowed[ed] if impl.pixels else validator_allowed(test.conforms[ed])
 		if outcome in FATAL or outcome not in allowed or raw.get("memory"):
 			sev[ed] = "must"
 		else:
@@ -337,18 +335,23 @@ def judge(test: Test, impl: Impl, raw: dict, expected: dict[int, tuple | None], 
 	return res
 
 
-def discriminating(t: Test) -> bool:
-	"""The editions contradict each other on this file: they expect different pixels, or one expects none.
+def discriminating(t: Test, impl: Impl) -> bool:
+	"""The editions contradict each other on this file, in what the implementation is judged on.
 
-	A difference in allowed outcomes alone is not a contradiction: the chunks the third edition adds
-	(APNG, cICP, eXIf) are unknown ancillary chunks to the second, which changes what a fault in them
-	means but not what image the file holds.
+	For a decoder: they expect different pixels, or one expects none. A difference in allowed outcomes
+	alone is not a contradiction: the chunks the third edition adds (APNG, cICP) are unknown ancillary
+	chunks to the second, which changes what a fault in them means but not what image the file holds.
+	For a validator: one edition's datastream conforms and the other's doesn't.
 	"""
+	return pixels_differ(t) if impl.pixels else t.conforms[2] != t.conforms[3]
+
+
+def pixels_differ(t: Test) -> bool:
 	return t.hashes[2][:1] != t.hashes[3][:1]
 
 
 def summarize(impl: Impl, results: dict[str, dict], tests: list[Test]) -> dict:
-	disc = {t.id for t in tests if discriminating(t)}
+	disc = {t.id for t in tests if discriminating(t, impl)}
 	s: dict = {"must": 0, "should": 0, "pass": 0}
 	for r in results.values():
 		s[r["worst"]] += 1
@@ -538,7 +541,7 @@ def _judge_and_report(args, tests: list[Test], avail: list[Impl], refs: dict[int
 		"tests": [{
 			"id": t.id, "file": t.file, "clause": t.clause, "statement": clauses.get(t.clause, ""),
 			"description": t.description, "allowed": {str(ed): t.allowed[ed] for ed in EDITIONS},
-			"discriminating": discriminating(t),
+			"discriminating": pixels_differ(t), "conforms": {str(ed): t.conforms[ed] for ed in EDITIONS},
 		} for t in tests],
 		"results": {name: {tid: {k: v for k, v in r.items()} for tid, r in rs.items()} for name, rs in results.items()},
 	}

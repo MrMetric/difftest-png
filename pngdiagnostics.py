@@ -39,7 +39,7 @@ class Diagnostics:
 			assert CONSEQUENCES[id] == "none", f"fault {id} requires a diagnostic"
 			assert not message and cause is None, "coverage cannot carry a fault"
 		else:
-			allowed = {"ERR": {"reject", "either"}, "WARN": {"recover", "either", "still"}}
+			allowed = {"ERR": {"reject", "either"}, "WARN": {"recover", "either", "still", "unaffected"}}
 			assert CONSEQUENCES[id] in allowed[level], f"{level} incompatible with {id}: {CONSEQUENCES[id]}"
 			assert message and "\n" not in message and "\r" not in message, "diagnostics occupy one stdout line"
 			if cause is not None:

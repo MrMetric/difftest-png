@@ -7,7 +7,7 @@ id	section	modality	subject	consequence	statement	editions
 13.1#crc-critical	5.5, 13.1	may	decoder	either	A CRC mismatch indicates a corrupted datastream and may be regarded as a fatal error. Reference: fatal on a critical chunk, except PLTE in a truecolour image (dropped) and IEND (accepted), which 13.1 says can be ignored when invalid; those two warn.	2,3
 13.1#crc-ancillary	5.5, 13.1	may	decoder	either	A CRC mismatch on an ancillary chunk may be regarded as fatal. Reference: the chunk is dropped with a warning and takes no further part in decoding.	2,3
 5.4#unknown-critical	5.4, 13.1, 13.5	shall	decoder	reject	A decoder trying to extract the image, upon encountering an unknown chunk in which the ancillary bit is 0, shall indicate to the user that the image contains information it cannot safely interpret.	2,3
-5.4#unknown-ancillary	5.4, 13.1	shall	decoder	none	Encountering an unknown ancillary chunk is never an error. The chunk can simply be ignored. Under edition 2 this includes cICP, mDCV, cLLI, eXIf, acTL, fcTL and fdAT.	2,3
+5.4#unknown-ancillary	5.4, 13.1	shall	decoder	none	Encountering an unknown ancillary chunk is never an error. The chunk can simply be ignored. Under edition 2 this includes cICP, mDCV, cLLI, iDOT, acTL, fcTL and fdAT; undefined public names additionally have a naming fault.	2,3
 13.5#reserved-bit	13.5	should	decoder	none	Decoders should not flag an error if the reserved bit is set to 1; it is sufficient to treat a chunk with this bit set in the same way as any other unknown chunk type.	2,3
 13.5#literal-comparison	13.5	shall	decoder	none	Decoders shall recognize chunk types by a simple four-byte literal comparison; it is incorrect to perform case conversion on chunk types. Reached for an unknown chunk type that differs from a known one only in letter case.	2,3
 5.6#before-plte	5.6 Table 7	shall	datastream	recover	cHRM, gAMA, iCCP, sBIT, sRGB (and in edition 3 cICP, mDCV, cLLI): Before PLTE and IDAT. A misplaced chunk is ignored (13.2).	2,3
@@ -154,9 +154,9 @@ id	section	modality	subject	consequence	statement	editions
 11.3.4.4#depth	11.3.4.4	shall	datastream	recover	The sPLT sample depth shall be 8 or 16. Ignored otherwise.	2,3
 11.3.4.4#length	11.3.4.4	shall	datastream	recover	The length after the sample depth byte shall be divisible by 6 if the sPLT sample depth is 8, or by 10 if it is 16. Ignored otherwise.	2,3
 11.3.4.4#order	11.3.4.4	shall	datastream	recover	Entries shall appear in decreasing order of frequency (equal frequencies accepted). Ignored otherwise.	2,3
-11.3.4.5#exif	11.3.4.5	note	datastream	none	eXIf: an Exif profile (TIFF structure). Reached for an eXIf with a TIFF header.	3
-11.3.4.5#header	11.3.4.5.2, 13.3	should	decoder	recover	Decoders should check the first four bytes to ensure that they have the hexadecimal values 49 49 2A 00 or 4D 4D 00 2A. Ignored otherwise. (Pointers inside the profile are not followed.)	3
-11.3.4.5#structure	11.3.4.5	shall	datastream	recover	The eXIf chunk contains an Exif profile: TIFF framing (TIFF 6.0 section 2), an 8-byte header whose first-IFD offset lies in the data, and that IFD's entry count, entries and next-IFD offset within it. Reference: ignored otherwise.	3
+11.3.4.5#exif	11.3.4.5; Extensions 1.5.0 section 3.7	note	datastream	none	eXIf: an Exif profile (TIFF structure). Reached for an eXIf with a TIFF header.	2,3
+11.3.4.5#header	11.3.4.5.2, 13.3; Extensions 1.5.0 section 3.7.2	should	decoder	recover	Decoders should check the first four bytes to ensure that they have the hexadecimal values 49 49 2A 00 or 4D 4D 00 2A. Ignored otherwise.	2,3
+11.3.4.5#structure	11.3.4.5; Extensions 1.5.0 section 3.7	shall	datastream	recover	The eXIf chunk contains an Exif profile: TIFF framing (TIFF 6.0 section 2), an 8-byte header whose first-IFD offset lies in the data, and that IFD's entry count, entries and next-IFD offset within it. Reference: ignored otherwise.	2,3
 11.3.5.1#time	11.3.5.1	note	datastream	none	tIME: year, month, day, hour, minute, second. Reached for a well-formed tIME.	2,3
 11.3.5.1#range	11.3.5.1	shall	datastream	recover	Month 1-12, Day 1-31, Hour 0-23, Minute 0-59, Second 0-60 (to allow for leap seconds). Ignored otherwise.	2,3
 11.3.6.1#actl	11.3.6.1	note	datastream	none	acTL: num_frames, num_plays. Reached for an acTL before IDAT.	3
@@ -219,3 +219,40 @@ rfc1951-3.2.7#repeat-crosses	RFC 1951 3.2.7	must	decoder	none	The code length re
 rfc1951-3.2.7#end-of-block-code	RFC 1951 3.2.7	must	datastream	reject	The literal/length symbol 256 (end of data), encoded using the literal/length Huffman code: symbol 256 needs a nonzero code length.	2,3
 rfc1951-3.2.7#one-distance-code	RFC 1951 3.2.7	must	decoder	none	If only one distance code is used, it is encoded using one bit, not zero bits; in this case there is a single code length of one, with one unused code.	2,3
 rfc1951-3.2.7#no-distance-codes	RFC 1951 3.2.7	must	decoder	none	One distance code of zero bits means that there are no distance codes used at all (the data is all literals).	2,3
+5.4#reserved-bit	5.4 Table 6	shall	datastream	unaffected	If the reserved bit is 1, the datastream does not conform to this version of PNG. Decoder treatment remains that of an unknown chunk.	2,3
+5.7.2#undefined-public	5.4, 5.7.2, 15.3.1	shall	datastream	unaffected	Public chunks are reserved for definition by the W3C; a proposed public chunk type SHALL not be used in publicly available software or datastreams until defined as such. Edition 3 additionally recognizes iDOT by owner policy.	2,3
+ext-3#single	Extensions 1.6.1 section 3	shall	datastream	recover	oFFs, pCAL, sCAL and sTER: Multiple OK? No.	2,3
+ext-3#before-idat	Extensions 1.6.1 section 3	shall	datastream	recover	oFFs, pCAL, sCAL and sTER: Before IDAT.	2,3
+ext-2.2#float	Extensions 1.6.1 section 2.2	shall	datastream	recover	ASCII floating-point notation: optional sign; integer or fraction or both; optional decimal point with integer only; optional E/e exponent with optional sign and at least one digit; no other characters. No range or precision limit.	2,3
+ext-4.1#layout	Extensions 1.6.1 section 4.1	shall	datastream	recover	oFFs contains two signed four-byte positions and a one-byte unit specifier.	2,3
+ext-4.1#unit	Extensions 1.6.1 section 4.1	shall	datastream	recover	oFFs unit specifier: 0 pixel, 1 micrometer.	2,3
+ext-4.2#layout	Extensions 1.6.1 section 4.2	shall	datastream	recover	pCAL contains a null-terminated calibration name, signed four-byte x0 and x1, one-byte equation and count, unit name and null-separated parameters; no null after the final parameter (or after unit name if zero parameters).	2,3
+ext-4.2#name	Extensions 1.6.1 section 4.2	shall	datastream	recover	Calibration name is subject to the same restrictions as the keyword in a PNG text chunk: 1-79 printable Latin-1 bytes, no leading, trailing or consecutive spaces.	2,3
+ext-4.2#range	Extensions 1.6.1 section 4.2	shall	datastream	recover	x0 and x1 must be different from each other.	2,3
+ext-4.2#equation	Extensions 1.6.1 section 4.2	shall	datastream	recover	Equation type may have values 0 linear, 1 base-e exponential, 2 arbitrary-base exponential, 3 hyperbolic.	2,3
+ext-4.2#parameters	Extensions 1.6.1 section 4.2	shall	datastream	recover	The number of parameters must agree with the actual number present and be correct for the equation type: 2, 3, 3, 4 for types 0, 1, 2, 3.	2,3
+ext-4.2#unit	Extensions 1.6.1 section 4.2	shall	datastream	recover	Unit name may contain any number of printable Latin-1 characters with no limitation on blanks; zero length is permitted.	2,3
+ext-4.3#layout	Extensions 1.6.1 section 4.3	shall	datastream	recover	sCAL contains one unit byte and two floating-point strings separated by a null, without a trailing null.	2,3
+ext-4.3#unit	Extensions 1.6.1 section 4.3	shall	datastream	recover	sCAL unit specifier: 1 meter, 2 radian.	2,3
+ext-4.3#positive	Extensions 1.6.1 section 4.3	shall	datastream	recover	Both pixel dimensions are required to be greater than zero.	2,3
+ext-4.4#layout	Extensions 1.6.1 section 4.4	shall	datastream	recover	gIFg contains one-byte Disposal Method, one-byte User Input Flag and two-byte Delay Time in network byte order.	2,3
+ext-4.5#layout	Extensions 1.6.1 section 4.5	shall	datastream	recover	gIFx contains an eight-byte Application Identifier, three-byte Authentication Code and application-specific data.	2,3
+ext-4.5#identifier	Extensions 1.6.1 section 4.5	shall	datastream	recover	The Application Identifier is a sequence of eight printable ASCII characters.	2,3
+ext-4.6#layout	Extensions 1.6.1 section 4.6	shall	datastream	recover	sTER contains one mode byte.	2,3
+ext-4.6#mode	Extensions 1.6.1 section 4.6	shall	datastream	recover	sTER mode: 0 cross-fuse, 1 diverging-fuse.	2,3
+ext-4.6#width	Extensions 1.6.1 section 4.6	shall	datastream	recover	The subimages have equal dimensions; the right starts on a column divisible by eight. padding := 15 - ((W - 1) mod 16); if padding > 7 then error.	2,3
+ext-7.1#layout	Extensions 1.6.1 section 7.1	shall	datastream	recover	gIFt is deprecated but registered: two signed four-byte grid positions, two unsigned four-byte dimensions, two cell-size bytes, two RGB colors, and plain text data.	2,3
+ext-5.1#dsig	Extensions 1.6.1 section 5.1	note	datastream	none	dSIG is registered. Its separate digital-signature format and constraints are not checked by this reference.	2,3
+ext-5.2#frac	Extensions 1.6.1 section 5.2	note	datastream	none	fRAc is registered. Its contents are not specified here and are not checked by this reference.	2,3
+idot#layout	Owner policy (DECISIONS.md), Apple iDOT	shall	datastream	unaffected	De facto Apple layout: uint32 count >= 1 followed by count (first row, row count, offset) uint32 triples; length is 4 + 12*count.	3
+idot#single	Owner policy (DECISIONS.md), Apple iDOT	shall	datastream	unaffected	Only one iDOT is permitted.	3
+idot#before-idat	Owner policy (DECISIONS.md), Apple iDOT	shall	datastream	unaffected	iDOT must precede the first IDAT.	3
+idot#interlace	Owner policy (DECISIONS.md), Apple iDOT	shall	datastream	unaffected	iDOT requires a noninterlaced image.	3
+idot#rows	Owner policy (DECISIONS.md), Apple iDOT	shall	datastream	unaffected	Segments cover rows 0..height-1 in order, contiguously, with at least one row per segment.	3
+idot#offsets	Owner policy (DECISIONS.md), Apple iDOT	shall	datastream	unaffected	Offsets relative to the iDOT length field increase, land on IDAT chunk starts, and segment 0 points to the first IDAT.	3
+idot#independence	Owner policy (DECISIONS.md), Apple iDOT	shall	datastream	unaffected	Each later segment starts at a byte-aligned DEFLATE block boundary with exactly the preceding rows decoded; no later back-reference reaches before that segment.	3
+idot#filter	Owner policy (DECISIONS.md), Apple iDOT	shall	datastream	unaffected	The first row of each later segment must not use Up, Average or Paeth: it cannot depend on the previous row.	3
+idot#crc	Owner policy (DECISIONS.md), Apple iDOT	shall	datastream	unaffected	iDOT CRC covers its type and data, as for all chunks; iDOT faults never affect decoder pixels or acceptance.	3
+ext-4.4#disposal	Extensions 1.6.1 section 4.4; GIF89a 23	shall	datastream	recover	Disposal Method is the GIF89a field: defined values 0-3; 4-7 are reserved for future definition.	2,3
+ext-4.4#input	Extensions 1.6.1 section 4.4; GIF89a 23	shall	datastream	recover	User Input Flag is the GIF89a flag: 0 no user input expected, 1 user input expected.	2,3
+ext-7.1#text	Extensions 1.6.1 section 7.1; GIF89a 25	shall	datastream	recover	Plain Text Data uses 7-bit printable ASCII characters.	2,3

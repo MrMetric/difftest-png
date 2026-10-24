@@ -18,7 +18,8 @@ Known chunk layouts are declared once in CHUNKS; the generic parser validates th
 Handlers receive Values, never raw chunk bodies.
 Section numbers are the 3rd edition's. Checks whose required behaviour differs between the
 editions branch on d.edition and quote both texts; chunks the 3rd edition adds (cICP, mDCV,
-cLLI, eXIf, acTL, fcTL, fdAT) are unknown ancillary chunks under edition 2.
+cLLI, acTL, fcTL, fdAT) are unknown ancillary chunks under edition 2. Registered extensions,
+including eXIf (2017), are recognized in both editions; iDOT is recognized only in edition 3.
 
 Policies where the specification leaves the decoder a choice (13.1: "The PNG decoder has to
 determine whether a syntax error is fatal (unrecoverable) or not"):
@@ -54,7 +55,7 @@ from dataclasses import dataclass
 
 from pngdiagnostics import Diagnostics, StreamDiagnostics
 from pngfields import (Parser, Values, Ignored, Layout, Struct, UInt, BYTE, UINT16, UINT31, enum,
-	Repeat, Choice, Text, Compressed, Content, Fragment, RemainderLength, Sample)
+	Repeat, Choice, Text, Compressed, Content, Fragment, RemainderLength, Sample, SInt32, AppleUInt32, Rule, TextList, positive_float)
 
 import inflate
 
@@ -72,7 +73,20 @@ SINGLE = {b"IHDR", b"PLTE", b"IEND", b"cHRM", b"gAMA", b"iCCP", b"sBIT", b"sRGB"
 	b"bKGD", b"hIST", b"tRNS", b"pHYs", b"tIME", b"eXIf", b"acTL"}
 # 11.3.2.5 Table 17: the cHRM values written with sRGB, in chunk order (white x, y, red x, y, green x, y, blue x, y).
 SRGB_CHRM = (31270, 32900, 64000, 33000, 30000, 60000, 15000, 6000)
-EDITION3_CHUNKS = {b"cICP", b"mDCV", b"cLLI", b"eXIf", b"acTL", b"fcTL", b"fdAT"}
+# Registered names whose content formats are outside this reference's scope.
+REGISTERED_OPAQUE = {b"dSIG": "ext-5.1#dsig", b"fRAc": "ext-5.2#frac"}
+EDITION3_CHUNKS = {b"cICP", b"mDCV", b"cLLI", b"acTL", b"fcTL", b"fdAT", b"iDOT"}
+
+# The same ordering tables carry extension clauses and decoder consequences.
+# Extension 1.6.1 section 3: "Multiple OK? No", "Before IDAT" for oFFs, pCAL, sCAL and sTER.
+SINGLE = dict.fromkeys(SINGLE, "5.6#single-ancillary")
+BEFORE_IDAT = dict.fromkeys(BEFORE_IDAT, "5.6#before-idat")
+for _name in (b"oFFs", b"pCAL", b"sCAL", b"sTER"):
+	SINGLE[_name] = "ext-3#single"
+	BEFORE_IDAT[_name] = "ext-3#before-idat"
+# Owner's iDOT rule: "one iDOT only; before the first IDAT".
+SINGLE[b"iDOT"] = "idot#single"
+BEFORE_IDAT[b"iDOT"] = "idot#before-idat"
 
 
 class Reject(Exception):
@@ -120,6 +134,10 @@ class _State:
 		self.idat_run = 0  # 0 before IDAT, 1 within the IDAT run, 2 after it
 		self.idat = bytearray()
 		self.idat_sizes: list[int] = []
+		self.chunk_offset = 0
+		self.idat_offsets: dict[int, int] = {}  # file offset -> offset in the concatenated zlib stream
+		self.idot = None
+		self.segment_rows: set[int] = set()
 		self.iend = False
 		self.splt_names: set[str] = set()
 		self.gama: int | None = None  # well-formed values, for the sRGB compatibility check
@@ -187,6 +205,7 @@ def _chunks(d: _State, data: bytes):
 		ctype = data[pos + 4:pos + 8]
 		# 5.3 "Although encoders and decoders should treat the length as unsigned, its value shall not exceed 2^31-1 bytes."
 		d.require(length <= 0x7FFFFFFF, "5.3#length-limit", f"chunk length {length} exceeds 2^31-1")
+		d.chunk_offset = pos
 		placed = _structure(d, ctype, length)
 		# 5.3 "chunk types are restricted to consist of bytes with values in the ranges 41-5A and 61-7A";
 		# 13.2 "The chunk type can be checked for plausibility": the reference treats a failure as corruption.
@@ -220,7 +239,8 @@ def _crc(d: _State, ctype: bytes, body: bytes, stored: int) -> bool:
 		d.require(ignorable, "13.1#crc-critical", f"CRC mismatch on critical chunk {ctype.decode()}")
 		d.expect(False, "13.1#crc-critical", f"CRC mismatch on {ctype.decode()}" + ("; chunk dropped" if ctype == b"PLTE" else ""))
 		return ctype == b"IEND"
-	d.expect(False, "13.1#crc-ancillary", f"CRC mismatch on ancillary chunk {ctype.decode()}; chunk dropped")
+	clause = CHUNKS[ctype].crc_clause if ctype in CHUNKS and (d.edition == 3 or ctype not in EDITION3_CHUNKS) else "13.1#crc-ancillary"
+	d.expect(False, clause, f"CRC mismatch on ancillary chunk {ctype.decode()}; chunk dropped")
 	return False
 
 
@@ -233,8 +253,12 @@ def _structure(d: _State, ctype: bytes, length: int) -> bool:
 	if d.idat_run == 1 and ctype != b"IDAT":
 		d.idat_run = 2
 	chunk = CHUNKS.get(ctype)
+	_naming(d, ctype, ctype in REGISTERED_OPAQUE or chunk is not None and (d.edition == 3 or ctype not in EDITION3_CHUNKS))
 	if chunk is None or (ctype in EDITION3_CHUNKS and d.edition < 3):
-		_unknown(d, ctype)
+		if ctype in REGISTERED_OPAQUE:
+			d.reach(REGISTERED_OPAQUE[ctype])
+		else:
+			_unknown(d, ctype)
 		return False
 	if not _ordering(d, ctype) or not _content_allowed(d, ctype):
 		return False
@@ -295,6 +319,15 @@ def _content_allowed(d: _State, ctype: bytes) -> bool:
 	return True
 
 
+def _naming(d: _State, ctype: bytes, defined: bool) -> None:
+	"""Naming conformance is independent of content dispatch and CRC policy."""
+	name = repr(ctype)
+	# 5.4 Table 6 "If the reserved bit is 1, the datastream does not conform to this version of PNG."
+	d.expect(not ctype[2] & 0x20, "5.4#reserved-bit", f"reserved bit set in {name}")
+	# 5.7.2 "A proposed public chunk type SHALL not be used in publicly available software or datastreams until defined as such".
+	d.expect(defined or bool(ctype[1] & 0x20), "5.7.2#undefined-public", f"undefined public chunk {name}")
+
+
 def _unknown(d: _State, ctype: bytes) -> None:
 	"""5.4 / 13.5: a chunk type this edition does not define."""
 	fold = bytes(c & 0xDF for c in ctype)
@@ -330,7 +363,7 @@ def _ordering(d: _State, ctype: bytes) -> bool:
 			d.expect(False, "11.2.2#single", "second (suggested) PLTE chunk ignored")
 			return False
 		# Table 7 "Multiple allowed: No"; 13.1 names "the presence of multiple gAMA chunks" as a syntax error.
-		d.expect(False, "5.6#single-ancillary", f"second {name} chunk ignored")
+		d.expect(False, SINGLE[ctype], f"second {name} chunk ignored")
 		return False
 	if ctype in BEFORE_PLTE and (d.plte is not None or d.idat_run):
 		# Table 7 "Before PLTE and IDAT"
@@ -340,13 +373,14 @@ def _ordering(d: _State, ctype: bytes) -> bool:
 		# Table 7 "After PLTE; before IDAT"
 		d.expect(False, "5.6#after-plte", f"{name} {'after IDAT' if d.idat_run else 'before PLTE'} ignored")
 		return False
-	if ctype in BEFORE_IDAT and d.idat_run:
+	# Extension 1.5.0 3.7: "anywhere between the IHDR and IEND chunks except between IDAT chunks".
+	if ctype in BEFORE_IDAT and d.idat_run and not (ctype == b"eXIf" and d.edition == 2):
 		# Table 7 "Before IDAT"
 		if ctype == b"acTL":
 			# 11.3.6.1 "The acTL chunk must appear before the first IDAT chunk within a valid PNG stream."
 			_apng_fault(d, "11.3.6.1#before-idat", "acTL after IDAT ignored")
 		else:
-			d.expect(False, "5.6#before-idat", f"{name} after IDAT ignored")
+			d.expect(False, BEFORE_IDAT[ctype], f"{name} after IDAT ignored")
 		return False
 	if ctype == b"PLTE" and d.ctype in (2, 6) and d.seen & AFTER_PLTE:
 		# Table 7 "After PLTE": a chunk already processed before a suggested PLTE is kept.
@@ -396,6 +430,9 @@ def _scanlines(d: _State, raw: bytes, incomplete: str | None = None) -> list[lis
 			ftype = raw[pos]
 			if j == 0 and ftype in (2, 3, 4):
 				d.reach("9.2#first-scanline")
+			# Owner's iDOT rule: "its first row isn't filtered against the previous segment's last row".
+			if not d.interlace and j in d.segment_rows:
+				d.expect(ftype not in (2, 3, 4), "idot#filter", f"iDOT segment row {j} needs the previous row")
 			cur = _unfilter(d, ftype, raw[pos + 1:pos + 1 + rowbytes], prev, bpp)
 			pos += 1 + rowbytes
 			# 7.2 the unused low-order bits of the last byte: "The contents of these unused bits are not specified."
@@ -529,7 +566,7 @@ def _decompress(d: _State) -> tuple[bytes, str | None]:
 			d.diagnostics.record(e.id, "ERR", f"image data: {e}")
 	incomplete = None
 	try:
-		raw, end = inflate.zlib_decompress(z, StreamDiagnostics(d.diagnostics, "image data", failure=failure))
+		raw, end = inflate.zlib_decompress(z, StreamDiagnostics(d.diagnostics, "image data", failure=failure), observer=_idot_segments(d))
 	except inflate.InflateError as e:
 		# 10.1 "Deflate-compressed datastreams within PNG are stored in the "zlib" format"; the deflate data
 		# shall follow RFC 1951, the zlib framing RFC 1950.
@@ -602,6 +639,7 @@ def _plte(d: _State, f: Values) -> None:
 def _idat(d: _State, f: Values) -> None:
 	"""11.2.3 IDAT Image data."""
 	d.idat_run = 1
+	d.idat_offsets[d.chunk_offset] = len(d.idat)
 	d.idat += f.stream
 	d.idat_sizes.append(len(f.stream))
 
@@ -851,10 +889,74 @@ def _apng_structure(d: _State) -> None:
 		_apng_fault(d, "4.9.2#sequence-numbers", f"sequence numbers {seq[:12]}{'...' if len(seq) > 12 else ''}")
 
 
+def _extension(d: _State, f: Values) -> None:
+	"""Extension metadata is fully validated by its declared fields; it does not change pixels."""
+
+
+def _idot(d: _State, f: Values) -> None:
+	# Owner's iDOT rule: "segments cover rows 0..height-1 in order, contiguous, each at least one row".
+	row = 0
+	for segment in f.segments:
+		d.expect(segment.first == row and segment.rows > 0, "idot#rows", "iDOT rows are not contiguous nonempty segments")
+		row = segment.first + segment.rows
+	d.expect(row == d.height, "idot#rows", "iDOT segments do not end at the image height")
+	d.idot = (d.chunk_offset, f.segments)
+	d.segment_rows = {s.first for s in f.segments[1:]}
+
+
+class _SegmentObserver:
+	"""Validate restart points in the one inflate pass; the observer never changes decoding."""
+	def __init__(self, d, points):
+		self.d, self.points = d, points
+		self.pending = set(points)
+		self.floor = 0
+
+	def block(self, bitpos, produced):
+		if bitpos % 8 == 0 and bitpos // 8 in self.points:
+			position = bitpos // 8
+			assert position in self.pending, "inflate cannot revisit a block boundary"
+			self.pending.remove(position)
+			# Owner: "has produced exactly the bytes of the rows before the segment".
+			self.d.expect(produced == self.points[position], "idot#independence", "iDOT boundary has the wrong number of decoded rows")
+			self.floor = produced
+
+	def reference(self, produced, distance):
+		# Owner: "no LZ77 back-reference resolved at or after that position reaches before it".
+		self.d.expect(produced - distance >= self.floor, "idot#independence", "iDOT segment refers to earlier segment data")
+
+	def finish(self):
+		# Owner: "at a block boundary, byte-aligned". Missing boundaries also include truncated streams.
+		self.d.expect(not self.pending, "idot#independence", "iDOT segment does not start on a byte-aligned DEFLATE block boundary")
+
+
+def _idot_segments(d: _State):
+	# Segments are row ranges of a non-interlaced image; on an interlaced one idot#interlace is the fault.
+	if d.idot is None or d.interlace:
+		return None
+	origin, segments = d.idot
+	assert segments and d.idat_offsets, "parsed iDOT and image data must exist before inflate"
+	points = {}
+	previous = -1
+	rowbytes = 1 + (d.width * CHANNELS[d.ctype] * d.depth + 7) // 8
+	for k, segment in enumerate(segments):
+		offset = origin + segment.offset
+		# Owner: "Offsets: increasing; each lands on the start of an IDAT chunk; segment 0 on the first IDAT."
+		valid = d.expect(offset > previous and offset in d.idat_offsets and (k != 0 or offset == next(iter(d.idat_offsets))),
+			"idot#offsets", f"iDOT segment {k} does not point to its ordered IDAT start")
+		previous = offset
+		if valid and k:
+			position = d.idat_offsets[offset]
+			# Empty IDATs cannot create separate restart points with different row counts.
+			if d.expect(position not in points, "idot#independence", "iDOT segments share a compressed stream position"):
+				points[position] = segment.first * rowbytes
+	return _SegmentObserver(d, points)
+
+
 @dataclass(frozen=True)
 class Chunk:
 	handler: object
 	layout: object
+	crc_clause: str = "13.1#crc-ancillary"
 
 
 def layout(*fields, clause="13.2#known-length"):
@@ -880,11 +982,63 @@ def trns_layout(d):
 	return sample_layout(d, "11.3.1.1#length", "11.3.1.1#mask")
 
 
-# Chunk layouts and handlers share one registration. Numeric fields can only be UInt(1/2/4);
-# UInt(4) unconditionally enforces 7.1. Framing lengths derive from these same declarations.
+# Chunk layouts and handlers share one registration. UInt(4) unconditionally enforces 7.1;
+# signed extension values and Apple uint32 have explicit types. Framing derives from the same declarations.
 # 11.2.1: width/height, bit depth, colour type, compression, filter, interlace.
 # 15.3.3 "An error is reported if an unrecognized value is encountered" in the five method bytes.
 CHUNKS = {
+	# ext 4.1: "X position: 4 bytes (signed integer) ... Y position ... Unit specifier: 1 byte";
+	# units: "0: unit is the pixel (true dimensions unspecified)", "1: unit is the micrometer".
+	b"oFFs": Chunk(_extension, layout(("x", SInt32()), ("y", SInt32()),
+		("unit", enum((0, 1), "ext-4.1#unit")), clause="ext-4.1#layout")),
+	# ext 4.2: "Calibration name ... Original zero ... Original max ... Equation type ... Number of parameters".
+	# The name "is subject to the same restrictions as the keyword in a PNG text chunk".
+	b"pCAL": Chunk(_extension, layout(("name", Text("keyword", True, "ext-4.2#name")),
+		("x0", SInt32()), ("x1", SInt32()),
+		# "they must be different from each other."
+		("range", Rule(lambda p: p.values["x0"] != p.values["x1"], "ext-4.2#range", "x0 equals x1")),
+		("equation", enum(range(4), "ext-4.2#equation")), ("count", BYTE),
+		# "must be correct for the specified equation type" (equations 0, 1, 2, 3 use 2, 3, 3, 4 parameters).
+		("arity", Rule(lambda p: p.values["count"] == (2, 3, 3, 4)[p.values["equation"]], "ext-4.2#parameters", "wrong parameter count for equation")),
+		# "no null separator ... after the unit name, if there are zero parameters".
+		("unit", Choice(lambda p: bool(p.values["count"]), {False: Text("printable", clause="ext-4.2#unit"),
+			True: Text("printable", True, "ext-4.2#unit")})),
+		("parameters", TextList(Text("float", clause="ext-2.2#float"), lambda p: p.values["count"], "ext-4.2#parameters")),
+		clause="ext-4.2#layout")),
+	# ext 4.3 "Unit specifier ... Pixel width ... Null separator ... Pixel height"; "Both values ... greater than zero."
+	# "The following values are legal for the unit specifier: 1: unit is the meter; 2: unit is the radian".
+	b"sCAL": Chunk(_extension, layout(("unit", enum((1, 2), "ext-4.3#unit")),
+		("width", Text("float", True, "ext-2.2#float")),
+		("positive_width", Rule(lambda p: positive_float(p.values["width"]), "ext-4.3#positive", "pixel width is not positive")),
+		("height", Text("float", clause="ext-2.2#float")),
+		("positive_height", Rule(lambda p: positive_float(p.values["height"]), "ext-4.3#positive", "pixel height is not positive")),
+		clause="ext-4.3#layout")),
+	# ext 4.4 "Disposal Method: 1 byte ... User Input Flag: 1 byte ... Delay Time: 2 bytes".
+	# GIF89a 23: disposal values 0-3 are defined; "4-7 - To be defined"; User Input Flag is one bit.
+	b"gIFg": Chunk(_extension, layout(("disposal", enum(range(4), "ext-4.4#disposal")),
+		("input", enum((0, 1), "ext-4.4#input")), ("delay", UINT16), clause="ext-4.4#layout")),
+	# ext 4.5 "eight printable ASCII characters"; authentication and application data are application-specific.
+	b"gIFx": Chunk(_extension, layout(("identifier", Repeat(UInt(1, "ext-4.5#identifier", range(32, 127)), 8)),
+		("authentication", Repeat(BYTE, 3)), ("data", Repeat(BYTE)), clause="ext-4.5#layout")),
+	# ext 4.6 "Mode: 1 byte"; "0: cross-fuse layout; 1: diverging-fuse layout".
+	b"sTER": Chunk(_extension, layout(("mode", enum((0, 1), "ext-4.6#mode")),
+		# "padding := 15 - ((W - 1) mod 16); if (padding > 7) then error".
+		("width", Rule(lambda p: 15 - ((p.d.width - 1) % 16) <= 7, "ext-4.6#width", "image width cannot hold a padded stereo pair")),
+		clause="ext-4.6#layout")),
+	# ext 7.1 "Text Grid Left Position ... Top Position ... Width ... Height ... Character Cell Width ... Height";
+	# "Text Foreground Color ... Background Color ... Plain Text Data". Text is a continuous byte stream.
+	b"gIFt": Chunk(_extension, layout(("left", SInt32()), ("top", SInt32()), ("width", UINT31), ("height", UINT31),
+		("cell_width", BYTE), ("cell_height", BYTE), ("foreground", Repeat(BYTE, 3)), ("background", Repeat(BYTE, 3)),
+		# GIF89a 25: "The textual data will be encoded with the 7-bit printable ASCII characters."
+		("text", Repeat(UInt(1, "ext-7.1#text", range(32, 127)))), clause="ext-7.1#layout")),
+	# Owner's iDOT layout: "uint32 segment count, then per segment (first row, row count, offset)";
+	# "count >= 1, length 4 + 12*count". The parser enforces count and complete consumption.
+	b"iDOT": Chunk(_idot, layout(("count", AppleUInt32()),
+		("nonempty", Rule(lambda p: p.values["count"] >= 1, "idot#layout", "iDOT has no segments")),
+		("segments", Repeat(Struct((("first", AppleUInt32()), ("rows", AppleUInt32()), ("offset", AppleUInt32()))), lambda p: p.values["count"])),
+		# Owner: "image not interlaced".
+		("interlace", Rule(lambda p: not p.d.interlace, "idot#interlace", "iDOT image is interlaced")),
+		clause="idot#layout"), crc_clause="idot#crc"),
 	b"IHDR": Chunk(_ihdr, layout(
 		("width", UInt(4, "11.2.1#dimensions-range")), ("height", UInt(4, "11.2.1#dimensions-range")),
 		("depth", enum((1, 2, 4, 8, 16), "11.2.1#bit-depth")),

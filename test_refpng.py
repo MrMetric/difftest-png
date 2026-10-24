@@ -301,7 +301,7 @@ def tiff(order="<", entries=(), *, next_ifd=0, tail=b""):
 
 def test_audit_exif():
 	check(png(((b"eXIf", b"II*\0"),)), warning="11.3.4.5#structure")
-	check(png(((b"eXIf", b"II*\0"),)), 2, clean=True)
+	check(png(((b"eXIf", b"II*\0"),)), 2, warning="11.3.4.5#structure")
 	for order in ("<", ">"):
 		check(png(((b"eXIf", tiff(order)),)), warning="11.3.4.5#structure")
 		check(png(((b"eXIf", tiff(order, ((0x0100, 4, 1, 1),))),)), clean=True)
@@ -541,7 +541,7 @@ def compare_manifest(report_path, baseline=None):
 	files = sorted((ROOT / "decode").rglob("*.png"))
 	assert {str(p.relative_to(ROOT / "decode")) for p in files} == set(rows), "manifest and PNG file sets differ"
 	result = {"files": len(files), "edition_runs": 0, "hash_differences": [], "outcome_differences": [],
-		"baseline_pixel_differences": [], "baseline_diagnostic_differences": []}
+		"baseline_pixel_differences": [], "baseline_diagnostic_differences": [], "projected_outcome_differences": []}
 	def run_one(module, data, ed):
 		try:
 			img = module.decode(data, ed)
@@ -558,7 +558,7 @@ def compare_manifest(report_path, baseline=None):
 		silent = sorted(expect.unreported(raw, CONSEQUENCES))
 		if module is refpng:
 			assert not silent, (module.__name__, ed, silent)
-		return {"diagnostics": lines[1:], "reached": sorted(reached), "unreported": silent, "hash": digest, "outcome": expect.outcomes(raw, CONSEQUENCES), "faults": sorted(set(id for id, _ in warnings) | ({fatal} if fatal else set()))}
+		return {"diagnostics": lines[1:], "reached": sorted(reached), "unreported": silent, "hash": digest, "outcome": expect.outcomes(raw, CONSEQUENCES), "projected_outcome": outcomes_after_unaffected(raw), "faults": sorted(set(id for id, _ in warnings) | ({fatal} if fatal else set()))}
 	for index, file in enumerate(files):
 		name = str(file.relative_to(ROOT / "decode"))
 		data, row = file.read_bytes(), rows[name]
@@ -570,6 +570,8 @@ def compare_manifest(report_path, baseline=None):
 				result["hash_differences"].append(where | {"expected": row[f"hash{ed}"], "actual": actual})
 			if actual["outcome"] != row[f"ed{ed}"]:
 				result["outcome_differences"].append(where | {"expected": row[f"ed{ed}"], "actual": actual})
+			if actual["projected_outcome"] != row[f"ed{ed}"]:
+				result["projected_outcome_differences"].append(where | {"expected": row[f"ed{ed}"], "actual": actual})
 			if baseline:
 				old = run_one(baseline, data, ed)
 				if old["hash"] != actual["hash"]:
@@ -602,7 +604,8 @@ def main():
 		test_value_then_layout_fault, test_dependent_choice, test_dependent_count, test_dependent_compression,
 		test_embedded_value_faults, test_fault_classification_and_dispatch,
 		test_hdist_policy, test_corrupt_image_tail, test_structure_before_crc, test_diagnostic_severity,
-		test_cicp_code_points):
+		test_cicp_code_points, test_conformance_naming, test_extensions, test_exif_editions,
+		test_idot, test_conformance_mutations):
 		test()
 		print(test.__name__ + ": passed", flush=True)
 	if args.manifest:
@@ -848,7 +851,7 @@ def test_structure_before_crc():
 
 
 def test_diagnostic_severity():
-	allowed = {"INFO": {"none"}, "WARN": {"recover", "either", "still"}, "ERR": {"reject", "either"}}
+	allowed = {"INFO": {"none"}, "WARN": {"recover", "either", "still", "unaffected"}, "ERR": {"reject", "either"}}
 	for id, consequence in CONSEQUENCES.items():
 		for level, kinds in allowed.items():
 			record = Diagnostics()
@@ -874,7 +877,7 @@ def test_cicp_code_points():
 		for value in range(256):
 			fields = (value, 1, 0, 1) if clause.endswith("primaries") else (1, value, 0, 1)
 			data = png(((b"cICP", bytes(fields)),))
-			check(data, 2, clean=True)  # 2nd edition: an unknown ancillary chunk
+			check(data, 2, warning="5.7.2#undefined-public")  # edition 2: an undefined public name
 			if value in bad:
 				_, record = check(data, 3, warning=clause)
 				assert "11.3.2.6#cicp" not in record.reached, "a cICP with a reserved code point is ignored"
@@ -885,6 +888,253 @@ def test_cicp_code_points():
 	# Both fields reserved: both faults are reported, and the chunk is still ignored.
 	_, record = check(png(((b"cICP", bytes((200, 200, 0, 1))),)), 3)
 	assert {id for id, _ in record.warnings} == {"11.3.2.6#primaries", "11.3.2.6#transfer"}, record.warnings
+
+
+def outcomes_after_unaffected(raw):
+	"""Review projection while expect.py's owner integrates the unaffected consequence."""
+	import expect
+	lines = []
+	for line in raw["stdout"].splitlines():
+		if line.startswith("WARN [") and CONSEQUENCES[line.split("[", 1)[1].split("]", 1)[0]] == "unaffected":
+			continue
+		lines.append(line)
+	return expect.outcomes(raw | {"stdout": "\n".join(lines)}, CONSEQUENCES)
+
+
+def pcal(*, name=b"calibration", x0=-1, x1=255, equation=0, count=2, unit=b"K", parameters=b"0\0+1.e2"):
+	return name + b"\0" + struct.pack(">iiBB", x0, x1, equation, count) + unit + (b"\0" + parameters if count else b"")
+
+
+def extension_cases():
+	"""One falsifiable example of each new extension fault clause."""
+	bodies = {
+		b"oFFs": struct.pack(">iiB", -2147483648, 2147483647, 1),
+		b"pCAL": pcal(), b"sCAL": b"\1.5\0+2.e-9999999999999999999999999999999",
+		b"gIFg": b"\3\1\xff\xff", b"gIFx": b"APP NAME\xff\0\xff\0\xffapplication",
+		b"sTER": b"\0", b"gIFt": struct.pack(">iiII8B", -5, -6, 9, 1, 1, 1, 255, 0, 0, 0, 255, 0) + b"text",
+	}
+	def image(name, body, **kw):
+		return png(((name, body),), width=9, raw=b"\0" + b"\x12\x34\x56" * 9, **kw)
+	cases = []
+	for name, section in ((b"oFFs", "4.1"), (b"pCAL", "4.2"), (b"sCAL", "4.3"),
+		(b"gIFg", "4.4"), (b"gIFx", "4.5"), (b"sTER", "4.6"), (b"gIFt", "7.1")):
+		cases.append((f"ext-{section}#layout", image(name, b"")))
+	for name, body in bodies.items():
+		if name in (b"oFFs", b"pCAL", b"sCAL", b"sTER"):
+			cases.append(("ext-3#single", image(name, body, after=((name, body),))))
+			cases.append(("ext-3#before-idat", png(after=((name, body),))))
+	for clause, name, body in (
+		("ext-4.1#unit", b"oFFs", bodies[b"oFFs"][:-1] + b"\2"),
+		("ext-4.2#name", b"pCAL", pcal(name=b"bad  name")),
+		("ext-4.2#range", b"pCAL", pcal(x0=2, x1=2)),
+		("ext-4.2#equation", b"pCAL", pcal(equation=4)),
+		("ext-4.2#parameters", b"pCAL", pcal(count=3)),
+		("ext-4.2#parameters", b"pCAL", pcal(parameters=b"0")),
+		("ext-4.2#unit", b"pCAL", pcal(unit=b"\n")),
+		("ext-4.3#unit", b"sCAL", b"\0" + b"1\0" + b"1"),
+		("ext-4.3#positive", b"sCAL", b"\1-1\0" + b"1"),
+		("ext-2.2#float", b"sCAL", b"\1nan\0" + b"1"),
+		("ext-4.4#disposal", b"gIFg", b"\4\0\0\0"),
+		("ext-4.4#input", b"gIFg", b"\0\2\0\0"),
+		("ext-7.1#text", b"gIFt", bodies[b"gIFt"] + b"\x7f"),
+		("ext-4.5#identifier", b"gIFx", b"\x1f" + bodies[b"gIFx"][1:]),
+		("ext-4.6#mode", b"sTER", b"\2")):
+		cases.append((clause, image(name, body)))
+	cases.append(("ext-4.6#width", png(((b"sTER", b"\0"),))))
+	return bodies, cases
+
+
+def test_conformance_naming():
+	for ed in (2, 3):
+		for name in (b"vpAG", b"vpAg"):
+			check(png(((name, b"opaque"),)), ed, clean=True)
+		for name, clause in ((b"vpag", "5.4#reserved-bit"), (b"vPAG", "5.7.2#undefined-public")):
+			_, record = check(png(((name, b"opaque"),)), ed, warning=clause, pixels=(18, 52, 86, 255))
+			assert outcomes_after_unaffected({"stdout": stdout(record), "verdict": "accept", "detail": ""}) == "pixels=pass"
+			if name == b"vpag":
+				assert "13.5#reserved-bit" in record.reached
+		# Naming is checked even when the CRC subsequently disables content dispatch.
+		data = png()
+		_, record = check(data[:33] + corrupt_crc(b"vPAG", b"") + data[33:], ed, warning="5.7.2#undefined-public")
+		assert "13.1#crc-ancillary" in record.reached
+		check(png(((b"VPAG", b""),)), ed, reject="5.4#unknown-critical")
+	for name in (b"acTL", b"fcTL", b"fdAT"):
+		check(png(((name, b"not parsed in edition 2"),)), 2, clean=True)
+	for name in (b"cICP", b"mDCV", b"cLLI", b"iDOT"):
+		check(png(((name, b""),)), 2, warning="5.7.2#undefined-public")
+
+
+def test_extensions():
+	bodies, cases = extension_cases()
+	for ed in (2, 3):
+		for name, body in bodies.items():
+			check(png(((name, body),), width=9, raw=b"\0" + b"\x12\x34\x56" * 9), ed, clean=True)
+		for clause, data in cases:
+			check(data, ed, warning=clause)
+		for name, clause in ((b"dSIG", "ext-5.1#dsig"), (b"fRAc", "ext-5.2#frac")):
+			_, record = check(png(((name, b"\xff\0anything"),)), ed, clean=True)
+			assert clause in record.reached
+		for name in (b"gIFg", b"gIFx", b"gIFt"):
+			check(png(((name, bodies[name]), (name, bodies[name])), after=((name, bodies[name]),)), ed, clean=True)
+		for equation, count in enumerate((2, 3, 3, 4)):
+			check(png(((b"pCAL", pcal(equation=equation, count=count, parameters=b"\0".join([b"-1"] * count))),)), ed, clean=True)
+		for name in (b"", b"a" * 80, b" leading", b"trailing ", b"two  spaces", b"control\x7f"):
+			check(png(((b"pCAL", pcal(name=name)),)), ed, warning="ext-4.2#name")
+		for width in (b"0", b"-0", b"+0.000e100", b"-1e-100000"):
+			for body in (b"\1" + width + b"\0" + b"1", b"\1" + b"1\0" + width):
+				check(png(((b"sCAL", body),)), ed, warning="ext-4.3#positive")
+		valid = (b"1", b"+1", b"1.", b".1", b"1.5", b"1e0", b"1.E+2", b".1e-99999999999999999999999")
+		invalid = (b"", b".", b"+", b"1e", b"1e+", b"1.e.2", b" 1", b"1 ", b"1\n", b"1_0", b"nan", b"inf", b"0x1", b"1f", b"\xff", b"1\0")
+		for value in valid + invalid:
+			check(png(((b"sCAL", b"\1" + b"1\0" + value),)), ed, clean=value in valid,
+				warning=None if value in valid else "ext-2.2#float")
+		check(png(((b"pCAL", pcal(x0=-2147483648, x1=2147483647)),)), ed, clean=True)
+		for position in (8, 12):
+			body = bytearray(bodies[b"gIFt"])
+			struct.pack_into(">I", body, position, 0x80000000)
+			check(png(((b"gIFt", bytes(body)),)), ed, warning="7.1#uint31")
+		_, record = check(png(((b"sCAL", b"\1bad\0-1"),)), ed)
+		assert {"ext-2.2#float", "ext-4.3#positive"} <= record.reached
+		# Independent cross-field checks survive invalid text or an unusable equation selector.
+		_, record = check(png(((b"pCAL", pcal(name=b"", x0=0, x1=0, equation=255, count=2, parameters=b"bad")),)), ed)
+		assert {"ext-4.2#name", "ext-4.2#range", "ext-4.2#equation", "ext-4.2#parameters", "ext-2.2#float"} <= record.reached
+
+
+def test_exif_editions():
+	profile = tiff(entries=((0x0100, 4, 1, 1),))
+	for ed in (2, 3):
+		check(png(((b"eXIf", profile),)), ed, clean=True)
+		check(png(((b"eXIf", b"invalid"),)), ed, warning="11.3.4.5#header")
+		check(png(((b"eXIf", profile), (b"eXIf", profile))), ed, warning="5.6#single-ancillary")
+	check(png(after=((b"eXIf", profile),)), 2, clean=True)
+	check(png(after=((b"eXIf", profile),)), 3, warning="5.6#before-idat")
+	check(png(after=((b"eXIf", b"invalid"),)), 2, warning="11.3.4.5#header")
+
+
+def idot_png(*, entries=None, parts=None, body=None, interlace=0, after=False, duplicate=False, bad_crc=False):
+	"""Two 1-pixel RGB rows in independent stored DEFLATE blocks, with explicit IDAT starts."""
+	raw = b"\0\x12\x34\x56" * 2
+	def stored(data, final):
+		return bytes((final,)) + struct.pack("<HH", len(data), len(data) ^ 65535) + data
+	if parts is None:
+		parts = (b"\x78\x01" + stored(raw[:4], 0), stored(raw[4:], 1) + struct.pack(">I", zlib.adler32(raw)))
+	if entries is None:
+		entries = ((0, 1, 40), (1, 1, 40 + 12 + len(parts[0])))
+	if body is None:
+		body = struct.pack(">I", len(entries)) + b"".join(struct.pack(">III", *entry) for entry in entries)
+	metadata = (corrupt_crc if bad_crc else chunk)(b"iDOT", body)
+	if duplicate:
+		metadata += metadata
+	header = chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 2, 8, 2, 0, 0, interlace))
+	idats = b"".join(chunk(b"IDAT", part) for part in parts)
+	return refpng.SIGNATURE + header + (idats + metadata if after else metadata + idats) + chunk(b"IEND", b"")
+
+
+def idot_cases():
+	cases = [("idot#layout", idot_png(body=b"")), ("idot#layout", idot_png(body=struct.pack(">I", 0))),
+		("idot#layout", idot_png(body=b"\0\0\0\2" + bytes(20))),
+		("idot#single", idot_png(duplicate=True)), ("idot#before-idat", idot_png(after=True)),
+		("idot#interlace", idot_png(interlace=1)), ("idot#crc", idot_png(bad_crc=True))]
+	# Apple's uint32 fields retain their full range; faults belong to iDOT, never the PNG uint31 rule.
+	for index, clause in ((0, "idot#rows"), (1, "idot#rows"), (2, "idot#offsets")):
+		entry = [0, 1, 40]
+		entry[index] = 0xffffffff
+		cases.append((clause, idot_png(entries=(tuple(entry), (1, 1, 63)))))
+	for entries in (((0, 0, 40), (0, 2, 63)), ((0, 1, 40), (0, 1, 63)), ((0, 1, 40), (2, 1, 63)), ((0, 1, 40), (1, 2, 63))):
+		cases.append(("idot#rows", idot_png(entries=entries)))
+	for entries in (((0, 1, 41), (1, 1, 63)), ((0, 1, 63), (1, 1, 40)), ((0, 1, 40), (1, 1, 40))):
+		cases.append(("idot#offsets", idot_png(entries=entries)))
+	# IDAT begins inside a stored block, not at a block boundary.
+	stream = zlib.compress(b"\0\x12\x34\x56" * 2, 0)
+	cases.append(("idot#independence", idot_png(parts=(stream[:11], stream[11:]))))
+	# A real byte-aligned block boundary, but the preceding segment has produced zero rows.
+	stream = b"\x78\x01\0\0\0\xff\xff" + zlib.compress(b"\0\x12\x34\x56" * 2, 0)[2:]
+	cases.append(("idot#independence", idot_png(parts=(stream[:7], stream[7:]))))
+	# Two literal-only fixed blocks share a byte: the second block begins at bit 58, not bit 56 or 64.
+	bits = []
+	def field(value, width):
+		bits.extend(value >> i & 1 for i in range(width))
+	def fixed_symbol(symbol):
+		code, width = (symbol + 48, 8) if symbol < 144 else (symbol - 256, 7)
+		bits.extend(code >> i & 1 for i in reversed(range(width)))
+	for final in (0, 1):
+		field(final, 1)
+		field(1, 2)
+		for symbol in b"\0\x12\x34\x56":
+			fixed_symbol(symbol)
+		fixed_symbol(256)
+		if not final:
+			assert 16 + len(bits) == 58, "the second block must be unaligned"
+	payload = bytes(sum(bit << i for i, bit in enumerate(bits[j:j+8])) for j in range(0, len(bits), 8))
+	stream = b"\x78\x01" + payload + struct.pack(">I", zlib.adler32(b"\0\x12\x34\x56" * 2))
+	for split in (7, 8):
+		cases.append(("idot#independence", idot_png(parts=(stream[:split], stream[split:]))))
+	# The second stored block is independent as compressed data; its first scanline needs the previous row.
+	for filter_type in (2, 3, 4):
+		raw = b"\0\x12\x34\x56" + bytes((filter_type, 0, 0, 0))
+		parts = (b"\x78\x01\0\4\0\xfb\xff" + raw[:4], b"\1\4\0\xfb\xff" + raw[4:] + struct.pack(">I", zlib.adler32(raw)))
+		cases.append(("idot#filter", idot_png(parts=parts)))
+	# A fixed block after Z_SYNC_FLUSH can reference the previous block; the boundary itself is aligned.
+	compressor = zlib.compressobj(9)
+	first = compressor.compress(b"\0\x12\x34\x56") + compressor.flush(zlib.Z_SYNC_FLUSH)
+	second = compressor.compress(b"\0\x12\x34\x56") + compressor.flush(zlib.Z_FINISH)
+	cases.append(("idot#independence", idot_png(parts=(first, second))))
+	return cases
+
+
+def test_idot():
+	check(idot_png(), clean=True, pixels=(18, 52, 86, 255) * 2)
+	# The length guard rejects large counts before allocating or iterating over entries.
+	check(idot_png(body=struct.pack(">I", 0xffffffff)), warning="idot#layout")
+	for clause, data in idot_cases():
+		new, record = check(data, warning=clause)
+		old, _ = check(data, 2, warning="5.7.2#undefined-public")
+		assert tuple(new.samples) == tuple(old.samples), clause
+		assert all(CONSEQUENCES[id] == "unaffected" for id, _ in record.warnings), record.warnings
+		assert outcomes_after_unaffected({"stdout": stdout(record), "verdict": "accept", "detail": ""}) == "pixels=pass"
+	# A segment-start Sub filter is independent, even when later rows would use previous-row filters.
+	raw = b"\0\x12\x34\x56" + b"\1\x12\x34\x56"
+	parts = (b"\x78\x01\0\4\0\xfb\xff" + raw[:4], b"\1\4\0\xfb\xff" + raw[4:] + struct.pack(">I", zlib.adler32(raw)))
+	check(idot_png(parts=parts), clean=True)
+	# Buffered Huffman lookahead must not move the apparent restart point.
+	compressor = zlib.compressobj(9)
+	first = compressor.compress(raw[:4]) + compressor.flush(zlib.Z_FULL_FLUSH)
+	second = compressor.compress(raw[4:]) + compressor.flush(zlib.Z_FINISH)
+	check(idot_png(parts=(first, second)), clean=True)
+	for path in sorted((ROOT / "decode").glob("y_chunk-idot*.png")):
+		data = path.read_bytes()
+		new, record = check(data)
+		old, _ = check(data, 2, warning="5.7.2#undefined-public")
+		assert tuple(new.samples) == tuple(old.samples)
+		bad = path.stem.endswith(("-stale", "-short", "-empty"))
+		assert bool(record.warnings) == bad, (path, record.warnings)
+
+
+def test_conformance_mutations():
+	"""Each fault regression must fail if its clause's checks are disabled at the checking boundary."""
+	_, cases = extension_cases()
+	cases += idot_cases()
+	cases += [("5.4#reserved-bit", png(((b"vpag", b""),))), ("5.7.2#undefined-public", png(((b"vPAG", b""),)))]
+	new_faults = {id for id in CONSEQUENCES if id.startswith(("ext-", "idot#")) and CONSEQUENCES[id] != "none"}
+	assert new_faults <= {clause for clause, _ in cases}, new_faults - {clause for clause, _ in cases}
+	original_check, original_expect = Parser.check, refpng._State.expect
+	for clause, data in cases:
+		check(data, warning=clause)
+		def muted_check(self, ok, id, message, *, kind):
+			return True if id == clause else original_check(self, ok, id, message, kind=kind)
+		def muted_expect(self, ok, id, message):
+			return True if id == clause else original_expect(self, ok, id, message)
+		Parser.check, refpng._State.expect = muted_check, muted_expect
+		try:
+			try:
+				check(data, warning=clause)
+			except (AssertionError, IndexError, KeyError) as error:
+				# Missing diagnostics fail the regression; missing framing checks can instead hit a parser invariant.
+				assert error.args, (clause, "mutation must fail loudly")
+			else:
+				raise AssertionError((clause, "regression passed with its check removed"))
+		finally:
+			Parser.check, refpng._State.expect = original_check, original_expect
 
 
 if __name__ == "__main__":

@@ -104,6 +104,40 @@ UINT31 = UInt(4, "7.1#uint31")
 
 
 @dataclass(frozen=True)
+class SInt32:
+	"""7.1: explicitly signed values use two's complement, including the sign bit."""
+
+
+@dataclass(frozen=True)
+class AppleUInt32:
+	"""iDOT's de facto uint32; not a PNG unsigned integer field."""
+
+
+@dataclass(frozen=True)
+class Rule:
+	"""A zero-width cross-field value rule, evaluated with validated dependencies only."""
+	predicate: object
+	clause: str
+	message: str
+
+	def __post_init__(self):
+		assert callable(self.predicate) and self.clause and self.message
+
+
+@dataclass(frozen=True)
+class TextList:
+	"""Null-separated strings occupying the remainder; cardinality is independent of contents."""
+	item: object
+	count: object
+	clause: str
+
+	def __post_init__(self):
+		assert isinstance(self.item, Text) and not self.item.terminated
+		assert callable(self.count) or isinstance(self.count, int) and self.count >= 0
+		assert self.clause
+
+
+@dataclass(frozen=True)
 class Sample:
 	"""A two-byte PNG sample whose unused high bits are masked under both editions."""
 	mask_clause: str
@@ -146,14 +180,14 @@ class Choice:
 
 @dataclass(frozen=True)
 class Text:
-	kind: str  # keyword, latin1, utf8, language
+	kind: str  # keyword, latin1, utf8, language, float, printable
 	terminated: bool = False
 	clause: str | None = None
 	null_clause: str | None = None
 
 	def __post_init__(self):
-		assert self.kind in ("keyword", "latin1", "utf8", "language"), self.kind
-		assert self.kind not in ("latin1", "utf8") or self.clause, "encoded text needs a diagnostic clause"
+		assert self.kind in ("keyword", "latin1", "utf8", "language", "float", "printable"), self.kind
+		assert self.kind not in ("latin1", "utf8", "float", "printable") or self.clause, "encoded text needs a diagnostic clause"
 
 
 @dataclass(frozen=True)
@@ -226,6 +260,10 @@ class Parser:
 		match field:
 			case UInt(width=width):
 				return width
+			case SInt32() | AppleUInt32():
+				return 4
+			case Rule():
+				return 0
 			case Sample():
 				return 2
 			case Struct(fields=fields):
@@ -296,7 +334,7 @@ class Parser:
 	def remainder(self, field):
 		"""Whether this type's extent is the rest of the enclosing buffer, independent of its value."""
 		match field:
-			case Text(terminated=False) | Compressed() | Content() | Fragment() | RemainderLength() | Repeat(count=None):
+			case TextList() | Text(terminated=False) | Compressed() | Content() | Fragment() | RemainderLength() | Repeat(count=None):
 				return True
 			case Choice(options=options):
 				return all(self.remainder(option) for option in options.values())
@@ -325,6 +363,27 @@ class Parser:
 
 	def _read(self, field):
 		match field:
+			case Rule(predicate=predicate, clause=clause, message=message):
+				self.check(predicate(self), clause, message, kind=Fault.VALUE)
+				return None
+			case SInt32():
+				# 7.1 "Values explicitly noted as signed are represented in two's complement notation."
+				return int.from_bytes(self.take(4), "big", signed=True)
+			case AppleUInt32():
+				assert self.name == b"iDOT", "only Apple's de facto layout uses unrestricted uint32"
+				return int.from_bytes(self.take(4), "big")
+			case TextList(item=item, count=count, clause=clause):
+				data = self.take(len(self.data) - self.pos)
+				parts = data.split(b"\0") if data else []
+				# ext 4.2 "must agree with the actual number of parameters present in the chunk".
+				# Cardinality and each string's grammar are independent even if a dependency is unusable.
+				try:
+					expected = self.resolve(count)
+				except _Unavailable:
+					expected = None
+				if expected is not None:
+					self.check(len(parts) == expected, clause, "number of strings differs from declared count", kind=Fault.VALUE)
+				return tuple(self.text(part, item) for part in parts)
 			case Sample(mask_clause=clause):
 				value = self.read(UINT16)
 				# 11.3.1.1 / 11.3.4.1, both editions: "the least significant bits are used";
@@ -408,15 +467,25 @@ class Parser:
 	def text(self, data, field):
 		if field.kind == "keyword":
 			# 11.3.3.1 "Keywords are restricted to 1 to 79 bytes in length."
-			self.check(1 <= len(data) <= 79, "11.3.3.1#keyword-length", f"keyword length {len(data)}", kind=Fault.VALUE)
+			self.check(1 <= len(data) <= 79, field.clause or "11.3.3.1#keyword-length", f"keyword length {len(data)}", kind=Fault.VALUE)
 			# "only code points 0x20-7E and 0xA1-FF are allowed."
-			self.check(all(32 <= b <= 126 or b >= 161 for b in data), "11.3.3.1#keyword-latin1", "keyword is not printable Latin-1", kind=Fault.VALUE)
+			self.check(all(32 <= b <= 126 or b >= 161 for b in data), field.clause or "11.3.3.1#keyword-latin1", "keyword is not printable Latin-1", kind=Fault.VALUE)
 			# "leading spaces, trailing spaces, and consecutive spaces are not permitted in keywords"
-			self.check(not (data.startswith(b" ") or data.endswith(b" ") or b"  " in data), "11.3.3.1#keyword-spaces", "keyword spacing", kind=Fault.VALUE)
+			self.check(not (data.startswith(b" ") or data.endswith(b" ") or b"  " in data), field.clause or "11.3.3.1#keyword-spaces", "keyword spacing", kind=Fault.VALUE)
 			return data.decode("latin-1")
 		if field.null_clause:
 			# 11.3.3: "Neither ... nor the text shall contain a zero byte (null character)."
 			self.check(b"\0" not in data, field.null_clause, "text contains a null character", kind=Fault.VALUE)
+		if field.kind == "float":
+			# ext 2.2: "Either the integer part or the fraction part, but not both, may be omitted."
+			# "A decimal point is allowed, but not required, if there is no fraction part."
+			self.check(ASCII_FLOAT.fullmatch(data) is not None, field.clause, "invalid ASCII floating-point string", kind=Fault.VALUE)
+			# Keep the exact spelling: the grammar has no limit on range or precision.
+			return data.decode("latin-1")
+		if field.kind == "printable":
+			# ext 4.2: unit names "may contain any number of printable Latin-1 characters".
+			self.check(all(32 <= b <= 126 or b >= 161 for b in data), field.clause, "string is not printable Latin-1", kind=Fault.VALUE)
+			return data.decode("latin-1")
 		if field.kind == "language":
 			# 11.3.3.4 "well-formed language tag defined by [BCP47]"; edition 2 "defined by [RFC-3066]".
 			value = data.decode("latin-1")
@@ -433,6 +502,16 @@ class Parser:
 			return data.decode("utf-8")
 		except UnicodeDecodeError:
 			self.fail(field.clause, "text is not UTF-8", kind=Fault.VALUE)
+
+
+# ext 2.2: optional sign, decimal mantissa, optional signed decimal exponent; no other characters.
+ASCII_FLOAT = re.compile(rb"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[Ee][+-]?[0-9]+)?")
+
+
+def positive_float(value):
+	"""The sign and nonzero mantissa decide positivity without overflow or underflow."""
+	assert ASCII_FLOAT.fullmatch(value.encode("ascii")), "positivity requires validated floating-point text"
+	return not value.startswith("-") and any(c in "123456789" for c in re.split("[Ee]", value)[0])
 
 
 # RFC 5646 2.1 ABNF: Language-Tag = langtag / privateuse / grandfathered.

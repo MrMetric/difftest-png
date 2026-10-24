@@ -62,11 +62,15 @@ def adler32(data: bytes) -> int:
 	return (s2 << 16) | s1
 
 
-def zlib_decompress(data: bytes, report: StreamDiagnostics) -> tuple[bytes, int]:
+def zlib_decompress(data: bytes, report: StreamDiagnostics, *, observer=None) -> tuple[bytes, int]:
 	"""Decode and record every detected condition before returning or raising."""
 	assert isinstance(report, StreamDiagnostics), "inflate requires the shared diagnostic sink"
 	try:
-		return _zlib_decompress(data, report)
+		try:
+			return _zlib_decompress(data, report, observer)
+		finally:
+			if observer is not None:
+				observer.finish()
 	except InflateError as e:
 		report.failure(e)
 		raise
@@ -82,7 +86,7 @@ def inflate(data: bytes, report: StreamDiagnostics, pos: int = 0, window: int = 
 		raise
 
 
-def _zlib_decompress(data: bytes, report: StreamDiagnostics) -> tuple[bytes, int]:
+def _zlib_decompress(data: bytes, report: StreamDiagnostics, observer=None) -> tuple[bytes, int]:
 	"""Decode the zlib stream at the start of `data`. Returns (output, end): data[end:] is not part of it.
 
 	RFC 1950 2.2: "Any data which may appear after ADLER32 are not part of the zlib stream."
@@ -108,7 +112,7 @@ def _zlib_decompress(data: bytes, report: StreamDiagnostics) -> tuple[bytes, int
 	# reject any stream in which the FDICT flag is set." (Every caller here is PNG, which has no dictionaries.)
 	if flg & 0x20:
 		raise InflateError("rfc1950-2.3#fdict", "FDICT set; no preset dictionary is defined for this format")
-	out, end = _inflate(data, 2, report, window=1 << (cinfo + 8))
+	out, end = _inflate(data, 2, report, window=1 << (cinfo + 8), observer=observer)
 	# 2.2 ADLER32 "contains a checksum value of the uncompressed data"; 2.3 "A compliant decompressor must
 	# check CMF, FLG, and ADLER32, and provide an error indication if any of these have incorrect values."
 	if len(data) < end + 4:
@@ -203,23 +207,26 @@ def _decode(b: _Bits, table: list[int], maxbits: int, out: bytearray, what: str)
 	return e >> 4
 
 
-def _inflate(data: bytes, pos: int, report: StreamDiagnostics, window: int = 32768) -> tuple[bytes, int]:
+def _inflate(data: bytes, pos: int, report: StreamDiagnostics, window: int = 32768, observer=None) -> tuple[bytes, int]:
 	"""Decode the raw DEFLATE stream at data[pos:]. Returns (output, end), `end` the index of the first byte
 	after the final block. `window` is the LZ77 window the container declares (only recorded, see below)."""
 	out = bytearray()
 	try:
-		return _blocks(_Bits(data, pos), out, report, window)
+		return _blocks(_Bits(data, pos), out, report, window, observer)
 	except InflateError as e:
 		# Every failure, including a code-table construction failure, carries the complete output prefix.
 		e.output = bytes(out)
 		raise
 
 
-def _blocks(b: _Bits, out: bytearray, report: StreamDiagnostics, window: int) -> tuple[bytes, int]:
+def _blocks(b: _Bits, out: bytearray, report: StreamDiagnostics, window: int, observer=None) -> tuple[bytes, int]:
 	blocks = 0
 	while True:
 		# 3.2.3 "Each block of compressed data begins with 3 header bits containing the following data:
 		# first bit BFINAL, next 2 bits BTYPE"
+		if observer is not None:
+			# Buffered lookahead has not been consumed; restart positions use the logical bit cursor.
+			observer.block(b.pos * 8 - b.cnt, len(out))
 		final = b.bits(1, out)
 		btype = b.bits(2, out)
 		start = len(out)
@@ -232,11 +239,11 @@ def _blocks(b: _Bits, out: bytearray, report: StreamDiagnostics, window: int) ->
 			report.reach("rfc1951-3.2.6#fixed")
 			lit, litbits, _ = _code(FIXED_LIT)
 			dist, distbits, _ = _code(FIXED_DIST)
-			_huffman(b, out, lit, litbits, dist, distbits, start, window, report)
+			_huffman(b, out, lit, litbits, dist, distbits, start, window, report, observer)
 		elif btype == 2:
 			report.reach("rfc1951-3.2.7#dynamic")
 			lit, litbits, dist, distbits = _dynamic_header(b, out, report)
-			_huffman(b, out, lit, litbits, dist, distbits, start, window, report)
+			_huffman(b, out, lit, litbits, dist, distbits, start, window, report, observer)
 		else:
 			# 3.2.3 "11 - reserved (error)"
 			raise InflateError("rfc1951-3.2.3#btype-reserved", "block type 3 is reserved", out)
@@ -339,7 +346,7 @@ def _dynamic_header(b: _Bits, out: bytearray, report: StreamDiagnostics) -> tupl
 
 
 def _huffman(b: _Bits, out: bytearray, lit: list[int], litbits: int, dist: list[int], distbits: int,
-		start: int, window: int, report: StreamDiagnostics) -> None:
+		start: int, window: int, report: StreamDiagnostics, observer=None) -> None:
 	"""3.2.3 / 3.2.5: decode literal/length and distance codes until end-of-block.
 
 	The common case is inlined: one table lookup per code, refilling the bit buffer 6 bytes at a time
@@ -402,6 +409,8 @@ def _huffman(b: _Bits, out: bytearray, lit: list[int], litbits: int, dist: list[
 		# 3.2.3 "a distance cannot refer past the beginning of the output stream."
 		if d > len(out):
 			raise InflateError("rfc1951-3.2.3#distance-too-far", f"distance {d} with only {len(out)} bytes output", out)
+		if observer is not None:
+			observer.reference(len(out), d)
 		# 3.2.3 "the backward distance may cross one or more block boundaries"
 		if d > len(out) - start:
 			report.reach("rfc1951-3.2.3#cross-block")
