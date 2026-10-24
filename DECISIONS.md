@@ -123,6 +123,14 @@ chunk. Section 13.2 recommends ignoring such a chunk but doesn't require it, so 
 reject the file, though it shouldn't. A decoder that shows the image must produce the same
 pixels as it would for the file without the cICP chunk.
 
+Apple's iDOT chunk was never registered, and its uppercase second letter claims a public name
+it has no right to. Strictly, that makes the file non-conforming. But the spec doesn't respect
+the private bit itself: the APNG chunks it standardized all have lowercase second letters. And
+Apple has published a great many PNG files carrying iDOT that work fine. So a file with iDOT
+counts as conforming. iDOT exists only to speed up decoding, so a file must always decode to
+the same pixels as it would without the chunk. A decoder that rejects such a file, as Apple's
+ImageIO sometimes does, has a bug.
+
 Validators like pngcheck are judged on whether the file conforms to the specification, which
 isn't the same as whether a decoder must decode it. A chunk name with the reserved bit set is
 the clearest case: decoders must ignore the chunk and show the image, but the spec says the
