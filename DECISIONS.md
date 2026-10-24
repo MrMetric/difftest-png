@@ -203,5 +203,9 @@ The human disclaimer is written in the README, and the report copies it from the
   before the image's first row is defined. That would be a bug: a file written that way decodes
   to the wrong pixels in every ordinary decoder. But it's an easy mistake to make, so ImageIO is
   worth checking.
+- A "real-world" profile beside the two editions. The editions would then be strict readings of
+  their texts (iDOT conforms under neither, and eXIf is unknown to the second), and the
+  real-world concessions (iDOT, eXIf in the second edition's era) would live in the profile.
+  A validator's verdict could then say whether it is strict or follows real-world practice.
 - The fourth edition, now a W3C editor's draft: what it changes for decoders, and whether it
   should get its own set of expectations.
