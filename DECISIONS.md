@@ -199,5 +199,10 @@ The human disclaimer is written in the README, and the report copies it from the
 - A script to clone and build upstream development versions, possibly with sanitizer builds.
 - Minimizing the suite.
 - APNG frames, colour management and encoders.
+- How Apple's encoder filters the first row of each iDOT segment. The image's first row is
+  filtered against a row of zeros; an iDOT-aware encoder could treat every segment's first row
+  the same way. A serial decoder would then get the wrong pixels for such a file, and the
+  judgement of segment-crossing filters would change. Worth checking against real Apple files,
+  and worth raising with the PNG editors.
 - The fourth edition, now a W3C editor's draft: what it changes for decoders, and whether it
   should get its own set of expectations.
