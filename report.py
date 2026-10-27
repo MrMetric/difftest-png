@@ -89,7 +89,9 @@ def esc(s) -> str:
 	return html.escape(str(s), quote=True)
 
 
-KINDS = ("reference", "decoders", "validators")  # the kinds of column, in the order the tables show them
+# The kinds of column, in the order the tables show them: a validator's verdict on the file is context for reading
+# the decoders' results, so it comes first after the reference.
+KINDS = ("reference", "validators", "decoders")
 
 
 def kind(impl: dict) -> str:

@@ -266,10 +266,12 @@ The report is one HTML file with everything inline, in a dark theme. It reads co
 JavaScript: the lens switch and the "only failing tests" filter are CSS. The script adds what CSS
 can't: sorting columns, hiding columns, and filtering rows by text, expectation class and family.
 
-Columns come in three kinds, the reference, decoders and validators, with a heavier border
-between them, because a validator's accept and a decoder's correct pixels are different results
-and should not sit side by side looking alike. Within a kind the columns are alphabetical, where a
-reader looking for one library expects it; the page can re-sort them by violations. There is no
+Columns come in three kinds, the reference, validators and decoders, in that order, with a
+heavier border between them. A validator's accept and a decoder's correct pixels are different
+results and should not sit side by side looking alike, and a validator's verdict on the file is
+context for reading the decoders' results, so it comes first, where a left-to-right reader meets
+it before them. Within a kind the columns are alphabetical, where a reader looking for one library
+expects it; the page can re-sort them by violations. There is no
 overall score, because choosing weights for one would be an editorial judgement. A decoder that
 passes every test only means the suite needs more tests.
 
