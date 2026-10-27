@@ -5,7 +5,7 @@
 	uv run expect.py --rename              # the same, renaming files whose prefix no longer matches expect3
 
 synth.py writes the suite and its manifest through this module's `row` and `write`; a refresh is for
-files edited or minimized by hand afterwards. Each file is decoded in-process, once (reading):
+files edited by hand afterwards. Each file is decoded in-process, once (reading):
 refpng.decode gives every interpretation of its pixels
 and the Diagnostics record, and pnglens reads the record under each lens. The manifest's columns:
 - `clause`: the first ERR fault's clause, else the first WARN fault's, among the faults that apply under
