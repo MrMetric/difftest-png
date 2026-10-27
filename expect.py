@@ -3,10 +3,10 @@
 	uv run expect.py                       # refresh decode/manifest.tsv from the reference decoder
 	uv run expect.py --retrace             # the same, accepting files that no longer reach a declared clause
 	uv run expect.py --rename              # the same, renaming files whose prefix no longer matches expect3
-	uv run expect.py --pool DIR FILE...    # copy distinct FILEs into DIR and write DIR/manifest.tsv
-	uv run expect.py --pool DIR            # judge DIR's files again and rewrite DIR/manifest.tsv
 
-Each file is decoded in-process, once (reading): refpng.decode gives every interpretation of its pixels
+synth.py writes the suite and its manifest through this module's `row` and `write`; a refresh is for
+files edited or minimized by hand afterwards. Each file is decoded in-process, once (reading):
+refpng.decode gives every interpretation of its pixels
 and the Diagnostics record, and pnglens reads the record under each lens. The manifest's columns:
 - `clause`: the first ERR fault's clause, else the first WARN fault's, among the faults that apply under
   lens 3 if there are any; empty for a file with no fault.
@@ -24,14 +24,11 @@ and the Diagnostics record, and pnglens reads the record under each lens. The ma
 
 The filename prefix summarises expect3 (PREFIX). Refreshing refuses to write a manifest in which a
 prefix disagrees with expect3, naming the files; --rename renames them and rewrites their ids instead.
+A refresh keeps the `note` column, synth.py's account of what each file is.
 """
 import argparse
 import csv
-import hashlib
-import os
-import shutil
 import sys
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,7 +42,7 @@ from pngdiagnostics import Diagnostics
 
 ROOT = Path(__file__).resolve().parent
 FIELDS = ["id", "file", "clause", "reaches", "images", "conforms2", "expect2", "conforms3", "expect3", "strict", "description"]
-PICKED = ["source", "picked", "note"]  # pick.py's columns, which a refresh keeps
+KEPT = ["note"]  # synth.py's column, which a refresh keeps
 PREFIX = {"display": "y", "recover": "r", "may-reject": "i", "must-reject": "n"}
 assert set(PREFIX) == set(pnglens.STRENGTH)
 assert tuple(pnglens.LENSES) == ("2", "3"), "the manifest has one conforms and one expect column per lens"
@@ -120,14 +117,6 @@ def row(r: Reading, file: Path, base: Path) -> dict:
 	return row
 
 
-def pool_row(file: Path, base: Path) -> dict | str:
-	"""row_for, or the reason the reference decoder cannot judge this file (it exhausts memory)."""
-	try:
-		return row_for(file, base)
-	except MemoryError as e:
-		return f"reference MemoryError: {e}"
-
-
 def write(path: Path, rows: list[dict]) -> None:
 	fields = FIELDS + [k for k in (rows[0] if rows else {}) if k not in FIELDS]
 	with open(path, "w", newline="") as f:
@@ -139,38 +128,9 @@ def write(path: Path, rows: list[dict]) -> None:
 def main() -> None:
 	run.cap_memory()
 	ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
-	ap.add_argument("--pool", type=Path, help="build a candidate pool in this directory")
 	ap.add_argument("--retrace", action="store_true", help="accept files that no longer reach a declared clause")
 	ap.add_argument("--rename", action="store_true", help="rename files whose prefix no longer matches expect3")
-	ap.add_argument("files", nargs="*", type=Path, help="files, or - to read one path per line from stdin")
 	args = ap.parse_args()
-	if args.files == [Path("-")]:
-		args.files = [Path(l) for l in sys.stdin.read().splitlines() if l]
-	if args.pool:
-		args.pool.mkdir(parents=True, exist_ok=True)
-		seen: dict[str, Path] = {}
-		for src in args.files:
-			digest = hashlib.sha256(src.read_bytes()).hexdigest()
-			if digest in seen:
-				continue
-			parts = src.resolve().parts
-			dst = args.pool / "__".join(parts[parts.index("corpus") + 1:] if "corpus" in parts else parts[-2:])
-			assert not dst.exists() or dst.read_bytes() == src.read_bytes(), dst
-			shutil.copyfile(src, dst)
-			seen[digest] = dst
-		files = sorted(seen.values()) if args.files else sorted(p for p in args.pool.iterdir() if p.suffix in (".png", ".apng"))
-		with ProcessPoolExecutor(os.cpu_count()) as ex:
-			rows = list(ex.map(pool_row, files, [args.pool] * len(files), chunksize=8))
-		for f, r in zip(files, rows):
-			if isinstance(r, str):
-				print(f"[pool] dropped {f.name}: {r}", file=sys.stderr)
-				f.unlink()
-		rows = [r for r in rows if isinstance(r, dict)]
-		assert len(rows) > len(files) // 2, f"the reference judged only {len(rows)} of {len(files)} files"
-		write(args.pool / "manifest.tsv", rows)
-		print(f"{len(rows)} files -> {args.pool / 'manifest.tsv'}", file=sys.stderr)
-		return
-	assert not args.files, "files are given only with --pool"
 	manifest = ROOT / "decode" / "manifest.tsv"
 	with open(manifest, newline="") as f:
 		rows = list(csv.DictReader(f, delimiter="\t"))
@@ -183,7 +143,7 @@ def main() -> None:
 		if missing:
 			lost.append(f"{r['id']}: no longer reaches {', '.join(sorted(missing))}")
 		changed += any(r.get(k) != fresh[k] for k in FIELDS)
-		r = rows[n] = fresh | {k: r[k] for k in PICKED if k in r}
+		r = rows[n] = fresh | {k: r[k] for k in KEPT if k in r}
 		want = PREFIX[r["expect3"]]
 		if r["id"].split("_", 1)[0] != want:
 			misnamed.append((r, f"{want}_{r['id'].split('_', 1)[1]}"))

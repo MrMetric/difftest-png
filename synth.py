@@ -1,12 +1,13 @@
-"""The synthesized test files: picture.py's picture in every file, each file testing one thing.
+"""The test suite: picture.py's picture in every file, each file testing one thing.
 
-	uv run synth.py [DIR]       # DIR defaults to out/synth/
+	uv run synth.py [DIR]       # DIR defaults to decode/
 
-Deletes every *.png in DIR, writes each case and DIR/index.tsv (name, expect3, clause, note), and prints
-the count. Every file shows the picture at 13x15 as 8-bit RGB, non-interlaced, filter None, zlib level 6,
-unless the test is about one of those: then it uses the colour type, depth or size the test needs, and
-a smaller size is the picture's top-left crop. Files are as directly comparable as possible outside
-the trait being tested, so most decode to the identical image.
+Deletes every *.png in DIR, writes each case as DIR/<prefix>_<name>.png with the prefix of its expect3
+(expect.PREFIX), writes DIR/manifest.tsv (expect.row for each file, plus a `note` column saying what the
+file is), and prints the count. Every file shows the picture at 13x15 as 8-bit RGB, non-interlaced,
+filter None, zlib level 6, unless the test is about one of those: then it uses the colour type, depth or
+size the test needs, and a smaller size is the picture's top-left crop. Files are as directly comparable
+as possible outside the trait being tested, so most decode to the identical image.
 
 Every file goes through emit(), which reads it with the reference exactly as expect.py does
 (expect.reading) before writing it, and asserts:
@@ -15,7 +16,8 @@ Every file goes through emit(), which reads it with the reference exactly as exp
 - the preferred interpretation (pnglens.preferred) has exactly the expected pixels as RGBA16: the
   variant's own by default, or the pixels the fault produces on purpose (a palette index past PLTE is
   opaque black; a tRNS value is alpha 0); a case expecting no pixels has no interpretation at all;
-- no two files have the same name or the same bytes.
+- no two files have the same name, prefixed name or bytes.
+The manifest row is built from that same reading, so the generator and the manifest cannot disagree.
 Randomness comes only from random.Random seeded with the case name, so two runs write identical bytes.
 The external DEFLATE encoders (zopfli, libdeflate-gzip, 7z) are optional: an absent one, or one whose
 stream equals an earlier one's, is noted on stderr and its file is not written.
@@ -32,6 +34,7 @@ import zlib
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -166,12 +169,13 @@ def zlib_png(z: bytes, v: Variant = RGB8) -> bytes:
 # ---------------------------------------------------------------- emit
 
 class Corpus:
-	"""The files written so far, and the reference check every one passes before it is written."""
+	"""The files written so far with their manifest rows, and the reference check every one passes before it is written."""
 
 	def __init__(self, out: Path, scratch: Path):
 		self.out, self.scratch = out, scratch
-		self.index: list[tuple[str, str, str, str]] = []
+		self.rows: list[dict] = []
 		self.names: set[str] = set()
+		self.files: set[str] = set()
 		self.contents: dict[bytes, str] = {}
 
 	def emit(self, name: str, data: bytes, expect3: str, clause: str, note: str, pixels: Variant | list | None = RGB8) -> expect.Reading:
@@ -182,7 +186,9 @@ class Corpus:
 		assert data not in self.contents, f"{name}: the same bytes as {self.contents.get(data)}"
 		assert expect3 in pnglens.STRENGTH, (name, expect3)
 		assert note and "\t" not in note and "\n" not in note, (name, note)
-		tmp = self.scratch / f"{name}.png"
+		stem = f"{expect.PREFIX[expect3]}_{name}"
+		assert stem not in self.files, f"{name}: {stem} is taken"
+		tmp = self.scratch / f"{stem}.png"
 		tmp.write_bytes(data)
 		r = expect.reading(tmp)
 		tmp.unlink()
@@ -202,10 +208,14 @@ class Corpus:
 			wrong = np.argwhere((got != want).any(axis=2))
 			assert not len(wrong), (f"{name}: {len(wrong)} pixels differ from the expected ones; first at (x, y) = "
 				f"({wrong[0][1]}, {wrong[0][0]}): {got[tuple(wrong[0])].tolist()} instead of {want[tuple(wrong[0])].tolist()}")
-		(self.out / f"{name}.png").write_bytes(data)
+		path = self.out / f"{stem}.png"
+		path.write_bytes(data)
+		row = expect.row(r, path, self.out)
+		assert row["id"] == stem and row["expect3"] == expect3, (name, row["id"], row["expect3"])
+		self.rows.append(row | {"note": note})
 		self.names.add(name)
+		self.files.add(stem)
 		self.contents[data] = name
-		self.index.append((name, expect3, clause, note))
 		return r
 
 
@@ -261,7 +271,7 @@ def filters(c: Corpus) -> None:
 
 # ---------------------------------------------------------------- 8.1 Adam7
 
-ADAM7_CROPS = ((1, 1), (1, 2), (2, 1), (3, 3), (4, 4), (5, 5), (1, 9), (9, 1), (2, 7), (7, 2), (8, 9))
+ADAM7_CROPS = ((1, 1), (1, 2), (2, 1), (2, 2), (3, 3), (4, 4), (5, 5), (1, 9), (9, 1), (2, 7), (7, 2), (8, 9))
 
 
 def empty_passes(w: int, h: int) -> tuple[list[int], list[str]]:
@@ -322,6 +332,10 @@ def structure(c: Corpus) -> None:
 	c.emit("idat-empty-middle", png(idats=[idat(z[:5]), idat(b""), idat(z[5:])]), "display", "10.2#idat-empty", "zero-length IDAT between two halves")
 	c.emit("idat-split-every-byte", png(idats=[idat(z[i:i + 1]) for i in range(len(z))]), "display", "10.2#idat-boundaries",
 		f"one byte per IDAT, {len(z)} IDAT chunks (8-bit RGB; PngSuite oi9 is 16-bit)")
+	for v16 in (TAGS["g16"], TAGS["rgb16"]):
+		z16 = zdata(v16)
+		c.emit(f"idat-split-every-byte-{v16.name}", png(v16, idats=[idat(z16[i:i + 1]) for i in range(len(z16))]), "display", "10.2#idat-boundaries",
+			f"one byte per IDAT on a 16-bit image, {len(z16)} IDAT chunks (PngSuite oi9)", v16)
 	c.emit("idat-split-in-zlib-header", png(idats=[idat(z[:1]), idat(z[1:])]), "display", "10.2#split-zlib-header", "IDAT boundary between the two zlib header bytes")
 	c.emit("idat-split-in-adler", png(idats=[idat(z[:-2]), idat(z[-2:])]), "display", "10.2#split-adler32", "IDAT boundary inside the Adler-32")
 	c.emit("idat-interrupted-by-text", png(idats=[idat(z[:8]), B.chunk(b"tEXt", b"k\0v"), idat(z[8:])]), "must-reject", "11.2.3#consecutive",
@@ -342,7 +356,11 @@ def structure(c: Corpus) -> None:
 	c.emit("zlib-short-byte", zlib_png(zlib.compress(raw0[:-1], 6)), "may-reject", "13.1#data-short", "decompressed data one byte short", None)
 	c.emit("zlib-empty", zlib_png(zlib.compress(b"", 6)), "may-reject", "13.1#data-short", "a valid zlib stream that decompresses to nothing", None)
 	c.emit("zlib-no-adler", zlib_png(z[:-4]), "may-reject", "10.1#zlib-check,rfc1950-2.2#end-in-adler32", "deflate complete, Adler-32 absent")
+	c.emit("idat-second-truncated", png(idats=[idat(z)], iend=None, trailer=struct.pack(">I", len(z)) + b"IDAT"), "may-reject", "13.1#end-of-stream",
+		"a complete IDAT, then the length and type of a second one and nothing more: the image is whole, the datastream is not")
 	c.emit("zlib-bad-adler", zlib_png(z[:-4] + bytes(4)), "must-reject", "rfc1950-2.3#adler32", "Adler-32 wrong, deflate data intact")
+	c.emit("zlib-bad-adler-own-idat", png(idats=[idat(z[:-4]), idat(bytes(4))]), "must-reject", "rfc1950-2.3#adler32",
+		"Adler-32 wrong and in its own IDAT after the data: a decoder that has every row before it reads the chunk may never check it (libpng only warns here)")
 	co = zlib.compressobj(6)
 	c.emit("zlib-no-final-block", zlib_png(co.compress(raw0) + co.flush(zlib.Z_SYNC_FLUSH)), "may-reject", "10.1#zlib-check,rfc1951-3.2.3#end-of-input",
 		"all data in non-final blocks, then the stream stops (no BFINAL, no Adler-32)")
@@ -586,6 +604,8 @@ def ihdr(c: Corpus) -> None:
 	z = zdata(RGB8)
 	c.emit("ihdr-not-first", B.assemble([B.chunk(b"tEXt", b"k\0v"), B.ihdr(W, H, 8, 2), B.chunk(b"IDAT", z), IEND]), "must-reject", "11.2#ihdr-first",
 		"a tEXt chunk precedes IHDR")
+	c.emit("ihdr-not-first-unknown", B.assemble([B.chunk(b"prIv", bytes(4)), B.ihdr(W, H, 8, 2), B.chunk(b"IDAT", z), IEND]), "must-reject", "11.2#ihdr-first",
+		"an unknown ancillary private chunk precedes IHDR (libpng checks for IHDR only when a known chunk arrives)")
 	c.emit("ihdr-dup", png(before=[B.ihdr(W, H, 8, 2)]), "must-reject", "11.2#one-ihdr", "two identical IHDR chunks")
 	c.emit("ihdr-dup-different", png(before=[B.ihdr(2, 2, 8, 2)]), "must-reject", "11.2#one-ihdr", "a second IHDR giving 2x2")
 	c.emit("ihdr-missing", B.assemble([B.chunk(b"IDAT", z), IEND]), "must-reject", "11.2#ihdr-first", "no IHDR at all", None)
@@ -623,6 +643,14 @@ def plte(c: Corpus) -> None:
 	for name, trns, what in (("plte-index-beyond-2bit", None, ""), ("plte-index-beyond-2bit-trns", b"\x80\xff", "; tRNS 80 ff, and the out-of-range pixels stay opaque")):
 		c.emit(name, image(p2, plte=bytes(s for e in cut for s in e), trns=trns), "recover", "13.1#index-opaque-black",
 			f"p2 with its PLTE cut to three entries: the {n3} index-3 pixels must render opaque black (13.1){what}", pixels(p2, trns=trns, palette=cut))
+	for tag, keep in (("p1", 1), ("p4", 15), ("p8", 35)):
+		v = TAGS[tag]
+		cut = entries(v)[:keep]
+		n = sum(i >= keep for (i,) in (s for row in samples(v) for s in row))
+		assert n, (tag, keep)
+		c.emit(f"plte-index-beyond-{v.bit_depth}bit", image(v, plte=bytes(s for e in cut for s in e)), "recover", "13.1#index-opaque-black",
+			f"{tag} with its PLTE cut to {keep} of {len(entries(v))} entries: the {n} pixels with an index past it must render opaque black (13.1)",
+			pixels(v, palette=cut))
 
 
 # ---------------------------------------------------------------- 11.3.1.1 tRNS
@@ -645,7 +673,9 @@ def trns(c: Corpus) -> None:
 	c.emit("trns-after-idat-gray", png(G8, after_idat=[tr(trns_for((g_a,)))]), "recover", "5.6#after-plte",
 		f"tRNS after IDAT on greyscale (value {g_a} is the commonest grey of the picture)", G8)
 	c.emit("trns-after-idat-pal", png(P8, after_idat=[tr(b"\0")]), "recover", "5.6#after-plte", "tRNS after IDAT on an indexed image", P8)
-	c.emit("trns-before-plte-pal", png(P8, before=[tr(b"\0")]), "recover", "5.6#after-plte", "tRNS before PLTE on an indexed image (Chromium has an RGB case)", P8)
+	c.emit("trns-before-plte-pal", png(P8, before=[tr(b"\0")]), "recover", "5.6#after-plte", "tRNS before PLTE on an indexed image", P8)
+	c.emit("trns-before-plte-rgb", png(before=[tr(trns_for(samples(RGB8)[0][0])), B.chunk(b"PLTE", plte_body(P8))]), "recover", "5.6#after-plte",
+		"tRNS naming the top-left pixel's colour, then a suggested palette, on a truecolour image: tRNS is before PLTE", pixels(RGB8, trns=trns_for(samples(RGB8)[0][0])))
 	c.emit("trns-dup-gray", png(G8, before=[tr(trns_for((g_a,))), tr(trns_for((g_b,)))]), "recover", "5.6#single-ancillary",
 		f"two tRNS chunks naming the picture's two commonest greys, {g_a} and {g_b}; expected pixels: the first applied", pixels(G8, trns=trns_for((g_a,))))
 	g4, g1, g2 = TAGS["g4"], TAGS["g1"], TAGS["g2"]
@@ -680,6 +710,13 @@ def trns(c: Corpus) -> None:
 			body = trns_for(value)
 			c.emit(f"trns-{tag}-{which}", png(v, before=[tr(body)]), "display", "11.3.1.1#applied",
 				f"tRNS names {which} ({', '.join(map(str, value))}), a colour of the picture: those pixels have alpha 0", pixels(v, trns=body))
+	for v in (TAGS["g16"], TAGS["rgb16"]):
+		present = {s for row in samples(v) for s in row}
+		high = Counter(tuple(c >> 8 for c in s) for row in samples(v) for s in row).most_common(1)[0][0]
+		value = next(tuple((h << 8) | lo for h in high) for lo in range(256) if tuple((h << 8) | lo for h in high) not in present)
+		sharing = sum(tuple(c >> 8 for c in s) == high for row in samples(v) for s in row)
+		c.emit(f"trns-{v.name}-high-byte-only", png(v, before=[tr(trns_for(value))]), "display", "15.3.3#trns-both-bytes",
+			f"tRNS ({', '.join(map(str, value))}) equals no pixel but shares its high bytes with {sharing}: a decoder comparing after reducing to 8 bits makes those transparent; nothing is", v)
 	p1 = TAGS["p1"]
 	for name, v, body, what in (("pal8-trns-entry0", P8, b"\0", "p8, tRNS of one byte 0: only entry 0 transparent"),
 			("pal1-trns-entry1", p1, b"\xff\0", "p1, tRNS ff 00: entry 1 transparent"),
@@ -723,6 +760,8 @@ def chunks(c: Corpus) -> None:
 		c.emit(name, png(before=[B.chunk(ctype, bytes(8))]), "may-reject", "5.3#type-letters", f"chunk type containing {what}")
 	c.emit("chunk-len-2-31", png(before=[B.chunk(b"tEXt", b"k\0v", length=0x80000000)]), "must-reject", "5.3#length-limit",
 		"ancillary chunk declaring length 2^31", None)
+	c.emit("chunk-len-huge-beyond-file", png(before=[B.chunk(b"tEXt", b"k\0v", length=(1 << 30) - 1)]), "must-reject", "11.2#idat-present",
+		"ancillary chunk declaring 2^30 - 1 bytes in a file of a few hundred: a decoder that allocates the declared length first needs a gigabyte", None)
 	c.emit("chunk-len-beyond-file", png(before=[B.chunk(b"tEXt", b"k\0v", length=100000)]), "must-reject", "11.2#idat-present",
 		"ancillary chunk declaring more bytes than the file has", None)
 	c.emit("chunk-ancillary-crc-bad", png(before=[B.chunk(b"tEXt", b"k\0v", crc_value=1)]), "may-reject", "13.1#crc-ancillary",
@@ -760,6 +799,21 @@ def ancillary(c: Corpus) -> None:
 	cases = [
 		("gama-len-2", on(ch(b"gAMA", GAMA[:2])), "recover", "13.2#known-length", "gAMA with 2 bytes; recommended: ignore the chunk", RGB8),
 		("gama-len-0", on(ch(b"gAMA", b"")), "recover", "13.2#known-length", "gAMA with 0 bytes", RGB8),
+		("bkgd-len-0", on(ch(b"bKGD", b"")), "recover", "13.2#known-length", "bKGD with 0 bytes", RGB8),
+		("chrm-len-0", on(ch(b"cHRM", b"")), "recover", "13.2#known-length", "cHRM with 0 bytes", RGB8),
+		("phys-len-0", on(ch(b"pHYs", b"")), "recover", "13.2#known-length", "pHYs with 0 bytes", RGB8),
+		("sbit-len-0", on(ch(b"sBIT", b"")), "recover", "13.2#known-length", "sBIT with 0 bytes", RGB8),
+		("srgb-len-0", on(ch(b"sRGB", b"")), "recover", "13.2#known-length", "sRGB with 0 bytes", RGB8),
+		("time-len-0", on(ch(b"tIME", b"")), "recover", "13.2#known-length", "tIME with 0 bytes", RGB8),
+		("cicp-len-0", on(ch(b"cICP", b"")), "recover", "13.2#known-length", "cICP with 0 bytes", RGB8),
+		("mdcv-len-0", on(ch(b"cICP", b"\x09\x10\x00\x01"), ch(b"mDCV", b"")), "recover", "13.2#known-length", "mDCV with 0 bytes, with the cICP it must accompany", RGB8),
+		("clli-len-0", on(ch(b"cLLI", b"")), "recover", "13.2#known-length", "cLLI with 0 bytes", RGB8),
+		("iccp-len-0", on(ch(b"iCCP", b"")), "recover", "11.3.2.3#separator", "iCCP with 0 bytes", RGB8),
+		("itxt-len-0", on(ch(b"iTXt", b"")), "recover", "11.3.3.4#separators", "iTXt with 0 bytes", RGB8),
+		("ztxt-len-0", on(ch(b"zTXt", b"")), "recover", "11.3.3.3#separator", "zTXt with 0 bytes", RGB8),
+		("splt-len-0", on(ch(b"sPLT", b"")), "recover", "11.3.4.4#separator", "sPLT with 0 bytes", RGB8),
+		("hist-len-0", pal(ch(b"hIST", b"")), "recover", "11.3.4.2#entries", "hIST with 0 bytes", P8),
+		("actl-len-0", on(ch(b"acTL", b"")), "recover", "11.3.6.1#length", "acTL with 0 bytes", RGB8),
 		("gama-len-5", on(ch(b"gAMA", GAMA + b"\0")), "recover", "13.2#known-length", "gAMA with 5 bytes", RGB8),
 		("gama-value-0", on(ch(b"gAMA", bytes(4))), "recover", "11.3.2.2#zero", "gAMA 0 (a meaningless value)", RGB8),
 		("gama-value-huge", on(ch(b"gAMA", b"\xff\xff\xff\xff")), "recover", "7.1#uint31", "gAMA 4294967295 (gamma 42949.67)", RGB8),
@@ -870,18 +924,18 @@ def ancillary(c: Corpus) -> None:
 			"acTL with 7 bytes and no frame control chunks: a still image with a broken animation header", RGB8),
 		("actl-frames-0", on(ch(b"acTL", bytes(8))), "recover", "11.3.6.1#num-frames-zero",
 			"acTL declaring 0 frames and no fcTL: the default image is all there is", RGB8),
-		("actl-after-idat", after(ch(b"acTL", b"\0\0\0\x01\0\0\0\0")), "recover", "11.3.6.1#before-idat", "acTL after IDAT, no fcTL", RGB8),
+		("actl-after-idat", after(actl(1)), "recover", "11.3.6.1#before-idat", "acTL after IDAT, no fcTL", RGB8),
 	]
 	W, H = picture.W, picture.H
-	actl1 = ch(b"acTL", b"\0\0\0\x01\0\0\0\0")
-	fctl = lambda w, h, dispose: ch(b"fcTL", struct.pack(">IIIIIHHBB", 0, w, h, 0, 0, 1, 10, dispose, 0))
+	actl1 = actl(1)
 	cases += [
 		("fctl-len-25", on(actl1, ch(b"fcTL", bytes(25))), "recover", "11.3.6.2#length", "fcTL of 25 bytes before IDAT", RGB8),
-		("fctl-dims-mismatch", on(actl1, fctl(2, 2, 0)), "recover", "11.3.6.2#default-image",
+		("fctl-len-0", on(actl1, ch(b"fcTL", b"")), "recover", "11.3.6.2#length", "fcTL of 0 bytes before IDAT", RGB8),
+		("fctl-dims-mismatch", on(actl1, fctl(0, 2, 2, 0, 0)), "recover", "11.3.6.2#default-image",
 			f"fcTL for the IDAT frame declares 2x2 for a {W}x{H} image: an APNG error, the static image is still complete", RGB8),
-		("fctl-dispose-3", on(actl1, fctl(W, H, 3)), "recover", "11.3.6.2#dispose-op",
+		("fctl-dispose-3", on(actl1, fctl(0, W, H, 0, 0, dispose=3)), "recover", "11.3.6.2#dispose-op",
 			"fcTL for the IDAT frame with dispose_op 3 (undefined): an APNG error, the static image is still complete", RGB8),
-		("fdat-without-fctl", after(ch(b"acTL", b"\0\0\0\x02\0\0\0\0"), ch(b"fdAT", b"\0\0\0\x01" + zdata(RGB8))), "recover", "11.3.6.1#before-idat",
+		("fdat-without-fctl", after(actl(2), fdat(1, zdata(RGB8))), "recover", "11.3.6.1#before-idat",
 			"acTL after IDAT, fdAT with no fcTL: broken animation, complete still image", RGB8),
 	]
 	for name, data, expect3, clause, note, v in cases:
@@ -947,12 +1001,297 @@ def idot(c: Corpus) -> None:
 		r = c.emit(name, data, "display", clause, note, v)
 		assert "idot#public-name" in r.verdicts["3"].strict_notes, name
 
+# ---------------------------------------------------------------- 4.9, 11.3.6 APNG
 
-SECTIONS = (filters, adam7, packing, structure, deflate, ihdr, plte, trns, chunks, ancillary, idot)
+def actl(frames: int, plays: int = 0) -> bytes:
+	return B.chunk(b"acTL", struct.pack(">II", frames, plays))
+
+
+def fctl(seq: int, w: int, h: int, x: int, y: int, delay_num: int = 1, delay_den: int = 10, dispose: int = 0, blend: int = 0) -> bytes:
+	return B.chunk(b"fcTL", struct.pack(">IIIIIHHBB", seq, w, h, x, y, delay_num, delay_den, dispose, blend))
+
+
+def fdat(seq: int, data: bytes) -> bytes:
+	"""An fdAT holding `data`: a frame's zlib stream, or a piece of one."""
+	return B.chunk(b"fdAT", struct.pack(">I", seq) + data)
+
+
+def frame_z(v: Variant, w: int, h: int) -> bytes:
+	"""The zlib stream of a frame showing v's top-left w x h, filter None: its own stream, not IDAT's."""
+	t = crop(v, w, h)
+	return zlib.compress(B.serialize(t.rows, w, h, t.colour_type, t.bit_depth), 6)
+
+
+def animation(v: Variant, frames: list[tuple[int, int, int, int]], *, first: dict | None = None, rest: dict | None = None,
+		plays: int = 0, idat_frame: bool = True, split: int = 1, trns: bytes | None = None) -> bytes:
+	"""v with an acTL, an fcTL for the IDAT image when `idat_frame` (`first` its extra fcTL fields), and after IDAT one
+	frame per (w, h, x, y): an fcTL (`rest` its extra fields) and the frame's top-left crop in `split` fdAT chunks.
+	Sequence numbers run 0, 1, 2, ... in datastream order."""
+	seq = 0
+	before = [actl(len(frames) + idat_frame, plays)]
+	if trns is not None:
+		before.append(B.chunk(b"tRNS", trns))
+	if idat_frame:
+		before.append(fctl(seq, v.width, v.height, 0, 0, **(first or {})))
+		seq += 1
+	after = []
+	for w, h, x, y in frames:
+		assert x + w <= v.width and y + h <= v.height and (x, y) != (0, 0), (w, h, x, y)
+		after.append(fctl(seq, w, h, x, y, **(rest or {})))
+		seq += 1
+		z = frame_z(v, w, h)
+		cuts = [len(z) * i // split for i in range(split + 1)]
+		for a, b in zip(cuts, cuts[1:]):
+			after.append(fdat(seq, z[a:b]))
+			seq += 1
+	return png(v, after_plte=before, after_idat=after)
+
+
+# The IDAT image as the first frame, then its top-left 6x7 at (3, 4): an animation-aware decoder that shows
+# the last frame or composites shows the crop over the picture.
+FRAME2 = (6, 7, 3, 4)
+SEQ_OK = "4.9.2#sequence-in-order"
+
+
+def apng(c: Corpus) -> None:
+	W, H = picture.W, picture.H
+	in_order = lambda *ids: ",".join(ids + (SEQ_OK,))
+	c.emit("apng-idat-is-frame", animation(RGBA8, [FRAME2]), "display", in_order("4.9.1#static-image-first-frame", "11.3.6.3#fdat"),
+		"acTL(2, 0); fcTL 13x15 before IDAT, so the IDAT image is frame 1; frame 2 is the picture's top-left 6x7 at (3, 4)", RGBA8)
+	c.emit("apng-idat-not-frame", animation(RGBA8, [FRAME2], idat_frame=False), "display", in_order("4.9.1#static-image-not-in-animation"),
+		"acTL(1, 0); no fcTL before IDAT, so the IDAT image is not part of the animation, whose one frame is the picture's top-left 6x7 at (3, 4); "
+		"the expected pixels are the static image", RGBA8)
+	offsets = [(9, 0), (0, 11), (9, 11), (4, 5), (2, 2), (7, 8), (5, 11)]
+	c.emit("apng-frames-8", animation(RGBA8, [(4, 4, x, y) for x, y in offsets]), "display", in_order("4.9.1#static-image-first-frame"),
+		f"acTL(8, 0): the IDAT image, then 7 frames each showing the picture's top-left 4x4, at {', '.join(f'({x}, {y})' for x, y in offsets)}; "
+		"sequence numbers 0..14", RGBA8)
+	assert 8 + 5 == W and 10 + 5 == H
+	c.emit("apng-frame-bottom-right", animation(RGBA8, [(5, 5, 8, 10)]), "display", in_order("11.3.6.2#fctl"),
+		"frame 2 is the picture's top-left 5x5 at (8, 10): its region touches the right and bottom edges", RGBA8)
+	variants: list[tuple[str, dict[str, Any], str]] = [("apng-dispose-background", {"first": {"dispose": 1}}, "dispose_op 1 (background) on the IDAT frame"),
+			("apng-dispose-previous", {"first": {"dispose": 2}}, "dispose_op 2 (previous) on the IDAT frame, the first frame (treated as background)"),
+			("apng-blend-over", {"rest": {"blend": 1}}, "blend_op 1 (over) on frame 2"),
+			("apng-delay-zero", {"first": {"delay_num": 0}, "rest": {"delay_num": 0}}, "delay_num 0 on both frames"),
+			("apng-delay-den-zero", {"first": {"delay_den": 0}, "rest": {"delay_den": 0}}, "delay_den 0 on both frames (it means 100)"),
+			("apng-num-plays-3", {"plays": 3}, "acTL(2, 3): three plays"),
+			("apng-fdat-split", {"split": 3}, "frame 2's zlib stream in three fdAT chunks, sequence numbers 2, 3, 4")]
+	for name, kw, what in variants:
+		c.emit(name, animation(RGBA8, [FRAME2], **kw), "display", in_order("11.3.6.2#fctl"), f"as apng-idat-is-frame, with {what}", RGBA8)
+	c.emit("apng-p8-trns", animation(P8, [FRAME2], trns=b"\0"), "display", in_order("11.3.1.1#applied", "11.3.6.3#fdat"),
+		"as apng-idat-is-frame on p8 with tRNS 00: entry 0 transparent in every frame", pixels(P8, trns=b"\0"))
+	for tag in ("g1", "rgb8", "rgba16"):
+		v = TAGS[tag]
+		c.emit(f"apng-{tag}", animation(v, [FRAME2]), "display", in_order(f"11.2.1#{tag}", "11.3.6.3#fdat"), f"as apng-idat-is-frame on {tag}", v)
+
+	# Faults: every one leaves the static image complete (13.1: display the static image).
+	still = "; the static image is complete"
+	def seq_png(numbers: tuple[int, int, int]) -> bytes:
+		z = frame_z(RGBA8, 6, 7)
+		return png(RGBA8, before=[actl(2), fctl(numbers[0], W, H, 0, 0)], after_idat=[fctl(numbers[1], *FRAME2), fdat(numbers[2], z)])
+	assert seq_png((0, 1, 2)) == animation(RGBA8, [FRAME2])
+	for name, numbers, what in (("apng-sequence-first-not-zero", (1, 2, 3), "the first fcTL has sequence number 1"),
+			("apng-sequence-gap", (0, 1, 3), "the fdAT's sequence number skips 2"),
+			("apng-sequence-out-of-order", (0, 2, 1), "the fdAT's sequence number 1 is lower than its fcTL's 2")):
+		c.emit(name, seq_png(numbers), "recover", "4.9.2#sequence-numbers", f"as apng-idat-is-frame; {what} ({', '.join(map(str, numbers))}){still}", RGBA8)
+	z = frame_z(RGBA8, 6, 7)
+	two = lambda n: png(RGBA8, before=[actl(n), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, *FRAME2), fdat(2, z)])
+	c.emit("apng-num-frames-more", two(3), "recover", "11.3.6.1#num-frames", f"acTL says 3 frames, there are two fcTL{still}", RGBA8)
+	c.emit("apng-num-frames-fewer", two(1), "recover", "11.3.6.1#num-frames", f"acTL says 1 frame, there are two fcTL{still}", RGBA8)
+	c.emit("apng-fctl-without-actl", png(RGBA8, after_idat=[fctl(0, *FRAME2), fdat(1, z)]), "recover", "11.3.6.1#missing",
+		"fcTL and fdAT after IDAT with no acTL: not an APNG, the IDAT image is all there is", RGBA8)
+	c.emit("apng-fctl-without-fdat", png(RGBA8, before=[actl(2), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, *FRAME2)]), "recover", "11.3.6.3#frame-data",
+		f"acTL(2, 0) and a second fcTL after IDAT with no fdAT: frame 2 has no data{still}", RGBA8)
+	c.emit("apng-actl-dup", png(RGBA8, before=[actl(2), actl(2), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, *FRAME2), fdat(2, z)]), "recover",
+		"5.6#single-ancillary", f"as apng-idat-is-frame with its acTL twice{still}", RGBA8)
+	c.emit("apng-fctl-uint31", png(RGBA8, before=[actl(1), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, 6, 7, 1 << 31, 4)]), "recover", "7.1#uint31",
+		"acTL(1, 0) and the IDAT frame's fcTL, then a further fcTL after IDAT whose x_offset is 2^31, past the PNG integer range "
+		"(the delay fields are two bytes and cannot hold it): that fcTL is ignored, which leaves a valid one-frame animation", RGBA8)
+	c.emit("apng-two-fctl-before-idat", png(RGBA8, before=[actl(2), fctl(0, W, H, 0, 0), fctl(1, W, H, 0, 0)]), "recover", "11.3.6.2#one-before-idat",
+		f"acTL(2, 0) and two fcTL for the full image before IDAT: only one may precede IDAT{still}", RGBA8)
+	c.emit("apng-frame-outside", png(RGBA8, before=[actl(2), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, 6, 7, 9, 10), fdat(2, z)]), "recover",
+		"11.3.6.2#region", f"frame 2 is 6x7 at (9, 10): past the right and bottom edges{still}", RGBA8)
+	c.emit("apng-frame-zero-size", png(RGBA8, before=[actl(2), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, 0, 7, 3, 4), fdat(2, zlib.compress(b""))]),
+		"recover", "11.3.6.2#dimensions", f"frame 2's fcTL has width 0, its fdAT an empty zlib stream{still}", RGBA8)
+	# A 4-byte fdAT (sequence number, no data) is a legal empty piece of frame data to the reference; 3 bytes cannot hold
+	# the sequence number. The frame's real fdAT follows, so the short chunk is the file's one fault.
+	c.emit("apng-fdat-empty", png(RGBA8, before=[actl(2), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, *FRAME2), B.chunk(b"fdAT", bytes(3)), fdat(2, z)]),
+		"recover", "11.3.6.3#length", f"as apng-idat-is-frame with a 3-byte fdAT before frame 2's fdAT: too short even for a sequence number{still}", RGBA8)
+	whole = two(2)
+	cut = whole.index(b"fdAT") + 4 + 4 + len(z) // 2
+	c.emit("apng-truncated-fdat", whole[:cut], "may-reject", "13.1#end-of-stream",
+		"as apng-idat-is-frame, cut off in the middle of frame 2's fdAT: no IEND", RGBA8)
+	c.emit("apng-idat-not-frame-3", animation(RGBA8, [FRAME2, (4, 4, 9, 0), (5, 5, 0, 10)], idat_frame=False), "display",
+		in_order("4.9.1#static-image-not-in-animation"), "acTL(3, 0); no fcTL before IDAT; three frames after it, none at the origin", RGBA8)
+	fz = frame_z(RGBA8, *FRAME2[:2])
+	c.emit("apng-fdat-no-fctl", png(RGBA8, after_plte=[actl(1)], after_idat=[fdat(0, fz)]), "recover", "11.3.6.3#needs-fctl",
+		"acTL(1, 0), IDAT, then an fdAT with no fcTL anywhere: the frame count is off too", RGBA8)
+	c.emit("apng-fctl-fctl-fdat", png(RGBA8, after_plte=[actl(2)], after_idat=[fctl(0, *FRAME2), fctl(1, *FRAME2), fdat(2, fz)]), "recover", "11.3.6.3#frame-data",
+		"acTL(2, 0); after IDAT two fcTL in a row, then one fdAT: the first frame after IDAT has no data", RGBA8)
+	c.emit("apng-actl-uint31", png(RGBA8, after_plte=[actl(2 ** 31 + 1), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, *FRAME2), fdat(2, fz)]), "recover", "7.1#uint31",
+		"acTL num_frames 2^31 + 1: out of range, so the acTL is ignored and the fcTL chunks have none", RGBA8)
+	c.emit("apng-fctl-before-idat-no-actl", png(RGBA8, after_plte=[fctl(0, W, H, 0, 0)]), "recover", "11.3.6.1#missing",
+		"an fcTL for the IDAT image, before IDAT, with no acTL", RGBA8)
+	c.emit("apng-fctl-region-before-idat-no-actl", png(RGBA8, after_plte=[fctl(0, *FRAME2)]), "recover", "11.3.6.1#missing",
+		"an fcTL before IDAT naming a 6x7 region at (3, 4), with no acTL: not an APNG, and not the default image's shape either", RGBA8)
+
+
+# ---------------------------------------------------------------- informational chunks on their own variants
+
+def informational(c: Corpus) -> None:
+	ch = B.chunk
+	for name, tag, depths in (("sbit-g8-4", "g8", (4,)), ("sbit-rgb16-565", "rgb16", (5, 6, 5)), ("sbit-rgb8-555", "rgb8", (5, 5, 5)),
+			("sbit-p8-444", "p8", (4, 4, 4)), ("sbit-ga8-4-4", "ga8", (4, 4)), ("sbit-rgba16-888-8", "rgba16", (8, 8, 8, 8))):
+		v = TAGS[tag]
+		c.emit(name, png(v, before=[ch(b"sBIT", bytes(depths))]), "display", "11.3.2.4#sbit",
+			f"{tag} with sBIT {' '.join(map(str, depths))}: informational, the samples decode as stored", v)
+
+	def commonest(v: Variant) -> tuple[int, ...]:
+		return Counter(s for row in samples(v) for s in row).most_common(1)[0][0]
+	top_left = lambda v: samples(v)[0][0]
+	bk = lambda *values: ch(b"bKGD", struct.pack(f">{len(values)}H", *values))
+	for name, v, body, what in (
+			("bkgd-g8", G8, bk(*commonest(G8)), f"the picture's commonest grey, {commonest(G8)[0]}"),
+			("bkgd-g16", TAGS["g16"], bk(*commonest(TAGS["g16"])), f"the picture's commonest grey, {commonest(TAGS['g16'])[0]}"),
+			("bkgd-rgb8", RGB8, bk(*top_left(RGB8)), f"the top-left pixel's colour {top_left(RGB8)}"),
+			("bkgd-rgb16", RGB16, bk(*top_left(RGB16)), f"the top-left pixel's colour {top_left(RGB16)}"),
+			("bkgd-p8", P8, ch(b"bKGD", b"\0"), "palette index 0"),
+			("bkgd-ga8", GA8, bk(commonest(GA8)[0]), f"grey {commonest(GA8)[0]}, the commonest grey"),
+			("bkgd-rgba8", RGBA8, bk(*top_left(RGBA8)[:3]), f"the top-left pixel's colour {top_left(RGBA8)[:3]}")):
+		c.emit(name, png(v, after_plte=[body]), "display", "11.3.4.1#bkgd",
+			f"{v.name} with bKGD {what}: a decoder must not composite onto it", v)
+	g_mid, rgb_mid = mid(G8), mid(RGB8)
+	for name, v, body, trns_body, what in (
+			("bkgd-trns-g8", G8, bk(*commonest(G8)), trns_for(g_mid), f"bKGD {commonest(G8)[0]}, tRNS grey {g_mid[0]}"),
+			("bkgd-trns-rgb8", RGB8, bk(*top_left(RGB8)), trns_for(rgb_mid), f"bKGD {top_left(RGB8)}, tRNS {rgb_mid}"),
+			("bkgd-trns-p8", P8, ch(b"bKGD", b"\0"), b"\0", "bKGD index 0, tRNS 00")):
+		c.emit(name, png(v, after_plte=[ch(b"tRNS", trns_body), body]), "display", "11.3.4.1#bkgd,11.3.1.1#applied",
+			f"{v.name} with {what}: the tRNS pixels have alpha 0, and a decoder that composites onto the background shows them opaque",
+			pixels(v, trns=trns_body))
+
+	icc_gray = ICC_RGB[:16] + b"GRAY" + ICC_RGB[20:]
+	icc_cmyk = ICC_RGB[:16] + b"CMYK" + ICC_RGB[20:]
+	assert len(icc_gray) == len(icc_cmyk) == 132
+	iccp = lambda profile: ch(b"iCCP", b"profile\0\0" + zlib.compress(profile))
+	for name, v, profile, expect3, clause, what in (
+			("iccp-rgb", RGB8, ICC_RGB, "display", "11.3.2.3#iccp", "an RGB profile on rgb8"),
+			("iccp-gray-on-gray", G8, icc_gray, "display", "11.3.2.3#iccp", "a GRAY profile on g8"),
+			("iccp-gray-on-rgb", RGB8, icc_gray, "recover", "11.3.2.3#colour-space", "a GRAY profile on rgb8: shall be RGB for colour images"),
+			("iccp-cmyk-on-rgb", RGB8, icc_cmyk, "recover", "11.3.2.3#colour-space", "a CMYK profile on rgb8: shall be RGB for colour images"),
+			("iccp-rgb-on-gray", G8, ICC_RGB, "recover", "11.3.2.3#colour-space", "an RGB profile on g8: shall be GRAY for greyscale images")):
+		c.emit(name, png(v, before=[iccp(profile)]), expect3, clause,
+			f"iCCP holding {what}; the profile is a 132-byte header with an empty tag table, so it maps nothing", v)
+
+	text_big = b"a" * (1 << 20)
+	c.emit("text-large", png(before=[ch(b"tEXt", b"Comment\0" + text_big)]), "display", "11.3.3.2#text", "one tEXt holding 1 MiB of 'a'")
+	c.emit("itxt-large", png(before=[ch(b"iTXt", b"Comment\0\0\0\0\0" + text_big)]), "display", "11.3.3.4#itxt", "one uncompressed iTXt holding 1 MiB of 'a'")
+	c.emit("itxt-null-in-text", png(before=[ch(b"iTXt", b"Comment\0\0\0en\0\0a\0b")]), "recover", "11.3.3.4#null", "iTXt whose text holds a NUL")
+	def exif(orientation: int) -> bytes:
+		# TIFF 6.0: little-endian header, the IFD at offset 8 with one entry, Orientation (0x112) SHORT x1, no next IFD.
+		return b"II*\0" + struct.pack("<IH", 8, 1) + struct.pack("<HHIHH", 0x112, 3, 1, orientation, 0) + struct.pack("<I", 0)
+	c.emit("exif-valid", png(before=[ch(b"eXIf", exif(1))]), "display", "11.3.4.5#exif", "eXIf: little-endian TIFF header and one IFD with Orientation 1")
+	c.emit("exif-orientation-6", png(before=[ch(b"eXIf", exif(6))]), "display", "11.3.4.5#exif",
+		"eXIf with Orientation 6 (rotate 90 degrees clockwise to display); nothing in PNG says to apply it, so the expected pixels are unrotated "
+		"and a decoder that rotates is counted wrong here: a question for the report")
+	counts = Counter(i for row in P8.rows for i in row)
+	assert sorted(counts) == list(range(len(entries(P8)))), "every palette entry is used"
+	hist = struct.pack(f">{len(counts)}H", *(min(counts[i], 65535) for i in range(len(counts))))
+	c.emit("hist-valid", png(P8, after_plte=[ch(b"hIST", hist)]), "display", "11.3.4.2#hist",
+		"p8 with a hIST giving each palette entry its pixel count (all nonzero)", P8)
+	# mDCV: BT.2020 primaries R, G, B and the D65 white point in 0.00002 units, luminance in 0.0001 cd/m2.
+	mdcv = struct.pack(">8HII", 35400, 14600, 8500, 39850, 6550, 2300, 15635, 16450, 1000 * 10000, 1)
+	clli = struct.pack(">II", 1000 * 10000, 400 * 10000)
+	c.emit("mdcv-clli-valid", png(before=[ch(b"cICP", bytes([9, 16, 0, 1])), ch(b"mDCV", mdcv), ch(b"cLLI", clli)]), "display",
+		"11.3.2.7#mdcv,11.3.2.8#clli",
+		"cICP 9 16 0 1 (BT.2020, PQ, full range), mDCV with BT.2020 primaries, D65, 1000 and 0.0001 cd/m2, and cLLI 1000 and 400 cd/m2; "
+		"the samples decode as stored")
+
+
+def trns_adam7(c: Corpus) -> None:
+	tr = lambda body: B.chunk(b"tRNS", body)
+	cases = [(tag, "mid", mid(TAGS[tag])) for tag in ("g2", "g4", "g8", "g16", "rgb8", "rgb16")]
+	cases.insert(0, ("g1", "white", (1,)))
+	for tag, which, value in cases:
+		v = TAGS[tag]
+		assert occurs(v, value), (tag, value)
+		name = f"trns-adam7-{tag}-{which}"
+		rng = random.Random(name)
+		body = trns_for(value)
+		c.emit(name, image(v, interlace=1, filter_for=lambda p, y: rng.randrange(5), after_plte=[tr(body)]), "display", "11.3.1.1#applied,8.1#adam7",
+			f"interlaced, random filter per scanline, tRNS names {which} ({', '.join(map(str, value))}): those pixels have alpha 0", pixels(v, trns=body))
+	name = "trns-adam7-p8-entry0"
+	rng = random.Random(name)
+	c.emit(name, image(P8, interlace=1, filter_for=lambda p, y: rng.randrange(5), after_plte=[tr(b"\0")]), "display", "11.3.1.1#applied,8.1#adam7",
+		"interlaced p8, random filter per scanline, tRNS of one byte 0: entry 0 transparent", pixels(P8, trns=b"\0"))
+
+
+# ---------------------------------------------------------------- dimensions
+
+def dimensions(c: Corpus) -> None:
+	# Huge IHDR, data for two rows: a decoder that allocates the whole image before reading the data needs 2 GiB or more.
+	w, h = 32769, 65580
+	rows = [b"\0" + bytes(P8.rows[y]) + bytes(w - P8.width) for y in range(2)]
+	z = zlib.compress(b"".join(rows), 9)
+	assert len(z) < 400, len(z)
+	c.emit("dims-huge-short-data", png(P8, ihdr=ihdr_raw(w, h, 8, 3), z=z), "may-reject", "13.1#data-short",
+		f"IHDR {w}x{h} p8 (over 2 GiB of pixels), image data for the first two rows only (the picture's rows, then index 0)", None)
+	h = (1 << 31) - 1
+	assert B.pass_size(1, h, 0) == (1, (h + 7) // 8)
+	c.emit("dims-huge-short-data-adam7", png(P8, ihdr=ihdr_raw(1, h, 8, 3, il=1), z=zlib.compress(b"\0" + bytes(P8.rows[0][:1]), 9)), "may-reject",
+		"13.1#data-short", f"IHDR 1x{h} p8 interlaced, image data for one row of reduced image 1", None)
+	w, h = 32, 1000001
+	rows = [b"\0" + bytes(RGBA8.rows[y][:4 * 13]) + bytes(4 * (w - RGBA8.width)) for y in range(2)]
+	c.emit("dims-tall-short-data", png(RGBA8, ihdr=ihdr_raw(w, h, 8, 6), z=zlib.compress(b"".join(rows), 9)), "may-reject", "13.1#data-short",
+		f"IHDR {w}x{h} rgba8, not interlaced, image data for the first two rows only (the picture's, then transparent black): "
+		"a decoder that walks every declared row takes a million steps for nothing", None)
+	n = 32768
+	top = RGBA8.rows[0]
+	wide = [tuple(top[(x % RGBA8.width) * 4 + k] for x in range(n) for k in range(4))]
+	left = [tuple(RGBA8.rows[y % RGBA8.height][:4]) for y in range(n)]
+	for name, width, height, rows, what in (("dims-wide-32768", n, 1, wide, "the picture's top row (sky, the fade at its right) repeated across"),
+			("dims-tall-32768", 1, n, left, "the picture's left column repeated down")):
+		v = Variant(6, 8, width, height, tuple(rows), None)
+		z = zlib.compress(raw(v), 9)
+		assert len(z) < 2048, (name, len(z))
+		c.emit(name, png(v, z=z), "display", "11.2.1#rgba8", f"{width}x{height} rgba8: {what}; one zlib stream", v)
+
+
+# ---------------------------------------------------------------- Apple CgBI
+
+def cgbi(c: Corpus) -> None:
+	v = RGBA8
+	rows = []
+	for row in v.rows:
+		out = []
+		for i in range(v.width):
+			r_, g, b, a = row[4 * i:4 * i + 4]
+			out += [int(s * a / 255 + 0.5) for s in (b, g, r_)] + [a]
+		rows.append(out)
+	data = B.serialize(rows, v.width, v.height, 6, 8)
+	co = zlib.compressobj(6, zlib.DEFLATED, -15)
+	deflated = co.compress(data) + co.flush()
+	assert zlib.decompress(deflated, -15) == data and any(rows[y] != list(v.rows[y]) for y in range(v.height))
+	c.emit("chunk-cgbi", B.assemble([B.chunk(b"CgBI", b"\x50\x00\x20\x02"), B.ihdr(v.width, v.height, 8, 6), B.chunk(b"IDAT", deflated), IEND]),
+		"must-reject", "11.2#ihdr-first",
+		"Apple CgBI as Xcode writes it: a CgBI chunk before IHDR, rgba8, IDAT a raw DEFLATE stream (no zlib header or Adler-32) of "
+		"scanlines in BGRA order with colour premultiplied by alpha; a decoder that accepts it shows the picture only if it undoes both", None)
+
+
+# ---------------------------------------------------------------- signature, IEND, PLTE
+
+def singles(c: Corpus) -> None:
+	whole = png()
+	c.emit("signature-wrong", b"\x88" + whole[1:], "must-reject", "5.2#signature", "first signature byte 0x88 instead of 0x89", None)
+	c.emit("signature-short", whole[:4], "must-reject", "5.2#signature", "the first 4 signature bytes and nothing else", None)
+	assert whole.endswith(IEND)
+	c.emit("iend-truncated", whole[:-4], "may-reject", "13.1#end-of-stream", "the datastream ends after IEND's type, before its CRC")
+	c.emit("plte-missing-pal", png(P8, plte=[]), "must-reject", "11.2.2#required", "p8 with no PLTE anywhere", None)
+
+
+SECTIONS = (filters, adam7, packing, structure, deflate, ihdr, plte, trns, chunks, ancillary, idot, apng, informational, trns_adam7, dimensions, cgbi, singles)
 
 
 def main() -> None:
-	out = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "out" / "synth"
+	out = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "decode"
 	assert len(sys.argv) <= 2, "usage: synth.py [DIR]"
 	out.mkdir(parents=True, exist_ok=True)
 	for p in out.glob("*.png"):
@@ -961,11 +1300,8 @@ def main() -> None:
 		c = Corpus(out, Path(scratch))
 		for section in SECTIONS:
 			section(c)
-	with open(out / "index.tsv", "w") as f:
-		f.write("name\texpect3\tclause\tnote\n")
-		for row in c.index:
-			f.write("\t".join(row) + "\n")
-	print(f"{len(c.index)} files")
+	expect.write(out / "manifest.tsv", c.rows)
+	print(f"{len(c.rows)} files")
 
 
 if __name__ == "__main__":

@@ -50,23 +50,22 @@ design has to leave room for it.
 
 ## The test suite
 
-The suite holds every conformance test plus every file that any implementation fails. For each
-test, each lens says what a decoder is to do with the file: display it, recover from its fault,
+The suite is generated: every test is a file `synth.py` writes, and nothing else. For each test,
+each lens says what a decoder is to do with the file: display it, recover from its fault,
 accept or reject it as it likes, or reject it. Going against that is a "must" violation where
 the specification requires and a "should" violation where it recommends. The filename prefix
 (`y_`, `n_`, `r_`, `i_`, borrowed from JSONTestSuite) summarizes the third edition's answer. A file has one fault; a file with two faults would be
 two tests. A behaviour that breaks a different set of decoders gets its own test, which is why
 tRNS has a test for each bit depth.
 
-The hand-made tests all show one picture. `synth.py` generates them from `picture.py`, which
+Every test shows one picture. `synth.py` generates them from `picture.py`, which
 defines a 13 by 15 pixel scene once, with samples in [0, 1], and derives it to every colour type
 and bit depth. Unless a test is about something else, its file is that picture at 13 by 15, RGB,
 8 bits, not interlaced, filter None, zlib-compressed. A test about greyscale uses the greyscale
 derivation, one about an awkward Adam7 shape uses the top-left crop, and so on. The tests then
 differ only in what they test, and their decoded images are directly comparable: usually
 identical, otherwise the same scene within what the colour type and depth can hold, so a reader
-can tell at a glance whether a decoder showed the right thing. Files from third-party suites keep
-their own pixels.
+can tell at a glance whether a decoder showed the right thing.
 
 The picture is built so that the representation tests have something to bite on: gradients with
 a different slope in each channel, a flat region with a soft edge, rows that repeat, pure black
@@ -84,15 +83,16 @@ reference also records which spec clauses each file exercises, and `run.py` refu
 file stops exercising one. That catches a test quietly breaking, for instance when an optimizer is
 run over the suite.
 
+The third-party test suites (PngSuite, the browsers' and the libraries' own) were mined once, at the
+start: every implementation was run over them, and each file some implementation failed was read for
+what tripped the decoder, which is now a generated case on the picture. None of their files is in the
+suite, so there is nothing to attribute or relicense, and their pixels never mattered, since the tests
+are about representation. A new third-party file is a lead for a new generated case, not a test.
+
 Test files should be as small as they can be while still testing what they're for. Minimizing
 happens once, after a full run, so every shrunken file can be checked against its original's
 results. The current suite isn't minimized yet. Optimizers like `oxipng` are only safe where
 they can't change what a file tests.
-
-Files from third-party test suites are included. A file from a suite whose licence forbids
-redistribution only matters if it is more than an obvious, minimal example of its case, and
-since the tests are about representation, its pixels can be swapped for others. Attribution
-still needs writing.
 
 ## The reference
 
@@ -276,7 +276,7 @@ The human disclaimer is written in the README, and the report copies it from the
 - Recording documented deviations.
 - A shim audit: each shim relays its library's diagnostic channel, or the column records that the
   library has none, so a silent accept can be read as the library's choice rather than the shim's.
-- Attribution for third-party test files, and a licence for the repo.
+- A licence for the repo.
 - A script to clone and build upstream development versions, possibly with sanitizer builds.
 - Minimizing the suite.
 - APNG frames, colour management and encoders.
