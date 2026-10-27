@@ -58,11 +58,31 @@ the specification requires and a "should" violation where it recommends. The fil
 two tests. A behaviour that breaks a different set of decoders gets its own test, which is why
 tRNS has a test for each bit depth.
 
-The test files are committed as they are, alongside `decode/manifest.tsv`. No generator lives in
-the repo. If you edit a file by hand, `expect.py` recomputes its expectations from the reference
-decoder. The reference also records which spec clauses each file exercises, and `run.py`
-refuses to run if a file stops exercising one. That catches a test quietly breaking, for
-instance when an optimizer is run over the suite.
+The hand-made tests all show one picture. `synth.py` generates them from `picture.py`, which
+defines a 13 by 15 pixel scene once, with samples in [0, 1], and derives it to every colour type
+and bit depth. Unless a test is about something else, its file is that picture at 13 by 15, RGB,
+8 bits, not interlaced, filter None, zlib-compressed. A test about greyscale uses the greyscale
+derivation, one about an awkward Adam7 shape uses the top-left crop, and so on. The tests then
+differ only in what they test, and their decoded images are directly comparable: usually
+identical, otherwise the same scene within what the colour type and depth can hold, so a reader
+can tell at a glance whether a decoder showed the right thing. Files from third-party suites keep
+their own pixels.
+
+The picture is built so that the representation tests have something to bite on: gradients with
+a different slope in each channel, a flat region with a soft edge, rows that repeat, pure black
+and pure white at every depth, and an alpha fade whose transparent pixels keep their colour. 13 is
+the smallest width and height at which every Adam7 pass is at least two pixels in each direction
+and every sub-byte depth leaves padding bits in a row; the height is 15 so that the picture isn't
+square and a swapped width and height shows. The generator checks each file against the reference
+before writing it: the lens-3 expectation, the clause the test is about, and the pixels. A test
+that doesn't exercise what it claims, or whose pixels the generator can't predict, is refused.
+
+The test files are committed as they are, alongside `decode/manifest.tsv`, so the suite runs
+without the generator and a file can be minimized or edited by hand without regenerating. If you
+edit a file by hand, `expect.py` recomputes its expectations from the reference decoder. The
+reference also records which spec clauses each file exercises, and `run.py` refuses to run if a
+file stops exercising one. That catches a test quietly breaking, for instance when an optimizer is
+run over the suite.
 
 Test files should be as small as they can be while still testing what they're for. Minimizing
 happens once, after a full run, so every shrunken file can be checked against its original's

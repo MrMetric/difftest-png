@@ -45,7 +45,7 @@ from pngdiagnostics import Diagnostics
 
 ROOT = Path(__file__).resolve().parent
 FIELDS = ["id", "file", "clause", "reaches", "images", "conforms2", "expect2", "conforms3", "expect3", "strict", "description"]
-PICKED = ["source", "picked"]  # pick.py's columns, which a refresh keeps
+PICKED = ["source", "picked", "note"]  # pick.py's columns, which a refresh keeps
 PREFIX = {"display": "y", "recover": "r", "may-reject": "i", "must-reject": "n"}
 assert set(PREFIX) == set(pnglens.STRENGTH)
 assert tuple(pnglens.LENSES) == ("2", "3"), "the manifest has one conforms and one expect column per lens"

@@ -2,14 +2,17 @@
 
 	uv run pick.py out/pool [--exclude POOL-ID ...]    # writes decode/*.png and decode/manifest.tsv
 
-The suite is every conformance test (the hand-made corpora: synth, probe, new, fix) and every file any
-implementation fails, plus the smallest file reaching each clause or rule the reference decoder reports
-that no kept file reaches.
+The suite is every conformance test (the generated corpus, synth) and every file any implementation
+fails, plus the smallest file reaching each clause or rule the reference decoder reports that no kept
+file reaches.
 Files are renamed `<y|n|r|i>_<name>.png` from what lens 3 expects a decoder to do with them
 (expect.PREFIX): y display, r recover, i may reject, n must reject.
 
 --exclude drops candidates whose only distinguishing outcome is noise, such as a result that hinges
 on an implementation reading uninitialised memory.
+
+A generated test's row carries the generator's note on what the file is, read from `out/synth/index.tsv`
+(what `synth.py` writes), as the `note` column; third-party files have none.
 """
 import csv
 import json
@@ -21,13 +24,14 @@ from pathlib import Path
 import expect
 
 ROOT = Path(__file__).resolve().parent
-CONFORMANCE = ("synth", "probe", "new", "fix")
+CONFORMANCE = ("synth",)
+SYNTH_INDEX = ROOT / "out" / "synth" / "index.tsv"
 
 
 def short_name(source: str) -> str:
 	parts = source.removesuffix(".png").removesuffix(".apng").split("__")
 	corpus, rest = parts[0], parts[-1]
-	if corpus in ("synth", "probe", "new", "fix"):
+	if corpus in CONFORMANCE:
 		return rest
 	return f"{corpus.split('-')[0]}-{rest}"
 
@@ -73,6 +77,11 @@ def main() -> None:
 			chosen.setdefault(tid, "clause")
 			reached |= new
 
+	notes: dict[str, str] = {}
+	if SYNTH_INDEX.exists():
+		with open(SYNTH_INDEX, newline="") as f:
+			notes = {f"synth__{r['name']}.png": r["note"] for r in csv.DictReader(f, delimiter="\t")}
+	assert all(rows[t]["file"] in notes for t in chosen if rows[t]["file"].startswith("synth__")), f"a synth file without a note in {SYNTH_INDEX}"
 	dest = ROOT / "decode"
 	for old in dest.glob("*.png"):
 		old.unlink()
@@ -86,7 +95,7 @@ def main() -> None:
 		assert name not in names, name
 		names.add(name)
 		shutil.copyfile(pool / r["file"], dest / f"{name}.png")
-		r.update(id=name, file=f"{name}.png", source=rows[tid]["file"], picked=chosen[tid])
+		r.update(id=name, file=f"{name}.png", source=rows[tid]["file"], picked=chosen[tid], note=notes.get(rows[tid]["file"], ""))
 		out_rows.append(r)
 	expect.write(dest / "manifest.tsv", out_rows)
 	print(f"{len(rows)} candidates, {len(chosen)} tests: {sum(1 for c in chosen.values() if c == 'conformance')} conformance, "
