@@ -77,7 +77,7 @@ before writing it: the lens-3 expectation, the clause the test is about, and the
 that doesn't exercise what it claims, or whose pixels the generator can't predict, is refused.
 
 The test files are committed as they are, alongside `decode/manifest.tsv`, so the suite runs
-without the generator and a file can be minimized or edited by hand without regenerating. If you
+without the generator and a file can be edited by hand without regenerating. If you
 edit a file by hand, `expect.py` recomputes its expectations from the reference decoder. The
 reference also records which spec clauses each file exercises, and `run.py` refuses to run if a
 file stops exercising one. That catches a test quietly breaking, for instance when an optimizer is
@@ -89,10 +89,12 @@ what tripped the decoder, which is now a generated case on the picture. None of 
 suite, so there is nothing to attribute or relicense, and their pixels never mattered, since the tests
 are about representation. A new third-party file is a lead for a new generated case, not a test.
 
-Test files should be as small as they can be while still testing what they're for. Minimizing
-happens once, after a full run, so every shrunken file can be checked against its original's
-results. The current suite isn't minimized yet. Optimizers like `oxipng` are only safe where
-they can't change what a file tests.
+The picture sets the size of the files: 13 by 15 is the smallest that exercises every Adam7
+pass and every padding case, so the files are as small as they can be while still showing it.
+The exceptions are the tests whose point is size (the dimension cases, the large text chunks,
+the decompression bombs). Shrinking a file on its own would break the rule that every file
+shows the same picture, so `minimize.py`, which predates the picture, is not used on the suite.
+Optimizers like `oxipng` are only safe where they can't change what a file tests.
 
 ## The reference
 
@@ -278,7 +280,7 @@ The human disclaimer is written in the README, and the report copies it from the
   library has none, so a silent accept can be read as the library's choice rather than the shim's.
 - A licence for the repo.
 - A script to clone and build upstream development versions, possibly with sanitizer builds.
-- Minimizing the suite.
+- Whether `minimize.py` still has a use, now that the picture sets every file's size.
 - APNG frames, colour management and encoders.
 - Whether Apple's ImageIO treats the row before each iDOT segment as zeros, the way the row
   before the image's first row is defined. That would be a bug: a file written that way decodes
