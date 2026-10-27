@@ -8,8 +8,14 @@ notice. Each (implementation, test) runs under address-space, file-size and wall
 native columns also run under valgrind memcheck. Every run is fresh unless --reuse is given: then
 results stored by earlier runs are used for every column except the reference decoder and those
 named in --rerun (name a column there after rebuilding or upgrading it).
-The whole run sits in a systemd scope capped at half the machine's memory. The outcome is judged against
-decode/manifest.tsv for each edition, and out/report.json plus out/report.html are written.
+The whole run sits in a systemd scope capped at half the machine's memory.
+
+Judging decodes each test file in-process once (expect.reading): every interpretation of its pixels and
+each lens's verdict. Per test, the columns' accepted outputs are bucketed by their pixels, and each bucket
+is labelled with the interpretations it matches under the equivalences of compare(): exact, the colour
+under fully transparent pixels zeroed or altered (`alpha0`), and, for a column whose max_depth is 8, a
+16-to-8 reduction (`16to8`). A bucket that matches no interpretation is unexplained. Every outcome is then
+scored under each lens separately (score()), and out/report.json plus out/report.html are written.
 """
 import argparse
 import csv
@@ -20,7 +26,6 @@ import subprocess
 import sys
 import time
 import tomllib
-import zlib
 from compression import zstd
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -30,11 +35,14 @@ from pathlib import Path
 import numpy as np
 
 import execute
+import expect
+import pnglens
 from execute import child_env, run_one
 
 ROOT = Path(__file__).resolve().parent
-EDITIONS = (2, 3)
-SEVERITY = {"pass": 0, "should": 1, "must": 2}
+LENSES = tuple(pnglens.LENSES)
+# The reference decoder read through each lens (pnglens.py --lens): it passes every test under its own lens.
+REFERENCES = {lens: f"reference-{lens}" for lens in LENSES}
 FATAL = ("crash", "timeout", "oom", "memory", "shim")  # always a must-violation
 # Not a performance limit: no PNG decoder should need this long, and slow decodes that do finish keep their
 # real outcome instead of becoming a timeout when the machine is busy.
@@ -67,9 +75,10 @@ class Test:
 	file: str
 	clause: str
 	reaches: list[str]
-	allowed: dict[int, dict[str, str]]  # edition -> outcome -> severity
-	hashes: dict[int, list[str]]  # edition -> acceptable canonical RGBA16 digests
-	conforms: dict[int, bool]  # edition -> whether the datastream conforms (what validators are judged on)
+	images: str  # the manifest's `images`: every interpretation's choices and digest
+	conforms: dict[str, bool]  # lens -> whether the datastream conforms (what validators are judged on)
+	expectation: dict[str, str]  # lens -> what a decoder is to do with the file
+	strict: str  # the strict notes, comma-joined
 	description: str
 
 
@@ -102,26 +111,16 @@ def load_impls(head: Path) -> list[Impl]:
 	return out
 
 
-def parse_outcomes(spec: str) -> dict[str, str]:
-	"""`pixels=pass,reject=should` -> {"pixels": "pass", "reject": "should"}."""
-	out = {}
-	for item in spec.split(","):
-		k, _, v = item.partition("=")
-		assert k in ("pixels", "reject", "accept") and v in SEVERITY, f"bad outcome item {item!r}"
-		out[k] = v
-	return out
-
-
 def load_manifest(path: Path) -> list[Test]:
 	tests = []
 	with open(path, newline="") as f:
 		for r in csv.DictReader(f, delimiter="\t"):
+			assert all(r[f"expect{lens}"] in pnglens.STRENGTH for lens in LENSES), f"{r['id']}: bad expectation"
 			tests.append(Test(
 				id=r["id"], file=r["file"], clause=r["clause"],
-				reaches=[c for c in r["reaches"].split(",") if c],
-				allowed={2: parse_outcomes(r["ed2"]), 3: parse_outcomes(r["ed3"])},
-				hashes={2: [h for h in r["hash2"].split("|") if h], 3: [h for h in r["hash3"].split("|") if h]},
-				conforms={ed: {"yes": True, "no": False}[r[f"conforms{ed}"]] for ed in EDITIONS},
+				reaches=[c for c in r["reaches"].split(",") if c], images=r["images"],
+				conforms={lens: {"yes": True, "no": False}[r[f"conforms{lens}"]] for lens in LENSES},
+				expectation={lens: r[f"expect{lens}"] for lens in LENSES}, strict=r["strict"],
 				description=r["description"],
 			))
 	assert len({t.id for t in tests}) == len(tests), "duplicate test ids"
@@ -171,36 +170,13 @@ def pixels(image: tuple[str, tuple, bytes]) -> np.ndarray:
 	return _unpacked[digest]
 
 
-_hidden: dict[str, bool] = {}
-
-
-def has_hidden_colour(image: tuple[str, tuple, bytes]) -> bool:
-	"""Does the image hold a fully transparent pixel whose colour is not black?"""
-	if image[0] not in _hidden:
-		a = pixels(image)
-		_hidden[image[0]] = bool(np.any((a[:, :, 3] == 0) & np.any(a[:, :, :3] != 0, axis=2)))
-	return _hidden[image[0]]
-
-
-def reached_of(stdout: str) -> set[str]:
-	"""Clause ids the reference decoder reports reaching: its `INFO reached=` line plus every WARN/ERR id."""
-	out = set()
-	for line in stdout.splitlines():
-		if line.startswith("INFO reached="):
-			out |= {c for c in line[len("INFO reached="):].split(",") if c}
-		elif line.startswith("INFO features="):  # the stopgap reference's form
-			out |= {c for c in line[len("INFO features="):].split(";") if c}
-		elif line.startswith(("WARN [", "ERR [")):
-			out.add(line.split("[", 1)[1].split("]", 1)[0])
-	return out
-
-
-def compare(impl: Impl, got: np.ndarray, maxval: int, want: np.ndarray) -> tuple[bool, dict]:
-	"""Do the decoded pixels match the expected ones? Returns (match, properties of the match)."""
+def compare(max_depth: int, got: np.ndarray, maxval: int, want: np.ndarray) -> tuple[bool, dict]:
+	"""Do the decoded pixels match the expected ones? Returns (match, properties of the match).
+	`max_depth` and `maxval` are the column's and its output's: only an 8-bit-only column may reduce 16 bits."""
 	props = {}
 	if got.shape != want.shape:
 		return False, props
-	if impl.max_depth == 8 and maxval <= 255 and want.max(initial=0) > 0 and np.any(want % 257):
+	if max_depth == 8 and maxval <= 255 and want.max(initial=0) > 0 and np.any(want % 257):
 		high = (want >> 8) * 257
 		rounded = ((want.astype(np.uint32) * 255 + 32767) // 65535 * 257).astype(np.uint16)
 		for name, cand in (("high byte", high), ("rounded", rounded)):
@@ -230,67 +206,57 @@ def visible_equal(a: np.ndarray, b: np.ndarray) -> bool:
 	return np.array_equal(a[shown], b[shown])
 
 
-def validator_allowed(conforms: bool) -> dict[str, str]:
-	"""A validator is judged on whether the datastream conforms, not on what a decoder must do with it:
-	it must accept exactly the conforming files and flag every other one."""
-	return {"pixels": "pass"} if conforms else {"reject": "pass"}
+def has_hidden_colour(a: np.ndarray) -> bool:
+	"""Does the image hold a fully transparent pixel whose colour is not black?"""
+	return bool(np.any((a[:, :, 3] == 0) & np.any(a[:, :, :3] != 0, axis=2)))
 
 
-def _chunks(data: bytes) -> tuple[list[bytes], bytes] | None:
-	"""Raw chunk records (length, type, data and CRC as stored) and what follows IEND; None if they do not parse."""
-	if not data.startswith(b"\x89PNG\r\n\x1a\n"):
-		return None
-	pos, out = 8, []
-	while pos + 12 <= len(data):
-		n = int.from_bytes(data[pos:pos + 4], "big")
-		if pos + 12 + n > len(data):
-			return None
-		out.append(data[pos:pos + 12 + n])
-		pos += 12 + n
-		if out[-1][4:8] == b"IEND":
-			break
-	return out, data[pos:]
+def label(reading: expect.Reading, image: tuple[str, tuple, bytes], maxval: int, max_depth: int) -> tuple[dict | str | None, str | None]:
+	"""(label, rating) of an accepted output. The label lists the choices of every interpretation the pixels
+	match, with the properties of the match to the best-rated one, which gives the rating (the first in the
+	decoder's order among equals); None when they match none, `unverifiable` when the file has no image."""
+	if not reading.interpretations:
+		return "unverifiable", None
+	found = []
+	for i in reading.interpretations:
+		if image[0] == i.digest:  # identical pixels: no array work beyond the alpha-0 question
+			ok, props = True, ({"alpha0": "preserved"} if has_hidden_colour(i.rgba) else {})
+		else:
+			ok, props = compare(max_depth, pixels(image), maxval, i.rgba)
+		if ok:
+			found.append((i, props))
+	if not found:
+		return None, None
+	best, props = max(found, key=lambda m: pnglens.RATING_ORDER.index(pnglens.rate(m[0].choices)))
+	return {"choices": [expect.choices_text(i.choices) for i, _ in found]} | props, pnglens.rate(best.choices)
 
 
-def alternatives(data: bytes, reference_stdout: str) -> dict[str, bytes]:
-	"""Other datastreams whose reference pixels are as right as the file's own, by the label the report shows.
-
-	crc-repaired: checking CRCs is the decoder's choice (13.1 "may be regarded as a fatal error"), so the image a
-	decoder gets by using an ancillary chunk with a bad CRC as stored is as right as the one with the chunk dropped.
-	last-tRNS: with more than one tRNS chunk the specification asks for recovery without saying which chunk to keep;
-	keeping the last, as if the earlier ones did not exist, is as coherent as the reference's keeping the first.
-	"""
-	parsed = _chunks(data)
-	if parsed is None:
-		return {}
-	recs, tail = parsed
-	out = {}
-	if "WARN [13.1#crc-ancillary]" in reference_stdout:
-		out["crc-repaired"] = data[:8] + b"".join(r[:-4] + zlib.crc32(r[4:-4]).to_bytes(4, "big") for r in recs) + tail
-	trns = [i for i, r in enumerate(recs) if r[4:8] == b"tRNS"]
-	if len(trns) > 1:
-		out["last-tRNS"] = data[:8] + b"".join(r for i, r in enumerate(recs) if i not in trns[:-1]) + tail
-	return out
-
-
-def reference_alternatives(refs: dict[int, Impl], file: Path, reference_stdout: str) -> dict[int, list[tuple[str, tuple]]]:
-	"""Per edition, (label, reference pixels) of each of the file's alternatives that the reference decodes."""
-	out: dict[int, list[tuple[str, tuple]]] = {ed: [] for ed in EDITIONS}
-	work = ROOT / "out" / "alternatives"
-	work.mkdir(parents=True, exist_ok=True)
-	for label, data in alternatives(file.read_bytes(), reference_stdout).items():
-		alt = work / f"{file.stem}.{label}.png"
-		alt.write_bytes(data)
-		for ed in EDITIONS:
-			r = run_one(refs[ed], alt, False)
-			if r["verdict"] == "accept":
-				out[ed].append((label, r["image"]))
-	return out
+def score(impl: Impl, verdict: str, lens: pnglens.Verdict, tag: dict | str | None) -> tuple[str, str, bool]:
+	"""(outcome, severity, strict) of one run under one lens. `strict`: a validator flagged a file that conforms
+	only because an extension's definition takes precedence over a convention it collides with."""
+	if verdict in FATAL:
+		return verdict, "must", False
+	assert verdict in ("accept", "reject"), verdict
+	if not impl.pixels:  # a validator is judged on whether the datastream conforms
+		if verdict == "accept":
+			return "pixels", "pass" if lens.conforms else "must", False
+		if not lens.conforms:
+			return "reject", "pass", False
+		return "reject", "pass" if lens.strict_notes else "must", bool(lens.strict_notes)
+	if verdict == "reject":
+		return "reject", {"display": "must", "recover": "should"}.get(lens.expectation, "pass"), False
+	if lens.expectation == "must-reject":  # an invalid file accepted, whatever its pixels (the label says which)
+		return "accept", "must", False
+	if tag is None:
+		return "wrong", "must", False
+	if tag == "unverifiable":
+		assert lens.expectation == "may-reject", lens
+		return "accept", "pass", False
+	return "pixels", "pass", False
 
 
-def judge(test: Test, impl: Impl, raw: dict, expected: dict[int, tuple | None], alts: dict[int, list[tuple[str, tuple]]] | None = None) -> dict:
-	"""Outcome of one run and its severity under each edition. Pixels matching one of the test's alternatives
-	pass like the expected ones, and the result records which alternative they matched."""
+def judge(impl: Impl, raw: dict, reading: expect.Reading, labelled: tuple[dict | str | None, str | None] | None) -> dict:
+	"""One run's outcome and its severity under each lens. `labelled` is label() of an accepted decoder output."""
 	v = raw["verdict"]
 	res = {"detail": raw["detail"]}
 	if raw.get("memory"):
@@ -298,80 +264,75 @@ def judge(test: Test, impl: Impl, raw: dict, expected: dict[int, tuple | None], 
 	if raw.get("memcheck_timeout") and v not in FATAL:
 		v = "timeout"
 		res["detail"] = f"killed after {execute.MEMCHECK_TIMEOUT_S:g} s under valgrind"
-	sev = {}
-	for ed in EDITIONS:
-		outcome = v
-		if v == "accept":
-			want = expected[ed]
-			if not impl.pixels:
-				outcome = "pixels"
-			elif want is None:
-				outcome = "accept"  # decoded what the reference rejects
-			else:
-				if raw["image"][0] == want[0]:  # identical pixels: no array work beyond the alpha-0 question
-					ok, props = True, ({"alpha0": "preserved"} if has_hidden_colour(want) else {})
-				else:
-					ok, props = compare(impl, pixels(raw["image"]), raw["maxval"], pixels(want))
-				for label, alt in (alts or {}).get(ed, []) if not ok else []:
-					ok, props = compare(impl, pixels(raw["image"]), raw["maxval"], pixels(alt))
-					if ok:
-						props["alternative"] = label
-						break
-				outcome = "pixels" if ok else "wrong"
-				res.update(props)
-		res.setdefault("outcome", {})[ed] = outcome
-		allowed = test.allowed[ed] if impl.pixels else validator_allowed(test.conforms[ed])
-		if outcome in FATAL or outcome not in allowed or raw.get("memory"):
-			sev[ed] = "must"
-		else:
-			sev[ed] = allowed[outcome]
+	tag = None
+	if v == "accept" and impl.pixels:
+		assert labelled is not None
+		tag, rating = labelled
+		res["label"] = tag
+		if rating:
+			res["rating"] = rating
+	outcome, sev = {}, {}
+	for lens, verdict in reading.verdicts.items():
+		outcome[lens], sev[lens], strict = score(impl, v, verdict, tag)
+		if raw.get("memory"):
+			sev[lens] = "must"
+		if strict:
+			res["strict"] = True
 	res["severity"] = sev
-	res["editions"] = [ed for ed in EDITIONS if sev[ed] == "pass"]
-	outcomes = set(res["outcome"].values())
-	res["outcome"] = outcomes.pop() if len(outcomes) == 1 else res["outcome"]
-	res["worst"] = min(sev.values(), key=lambda x: SEVERITY[x])  # a test fails only if it fails under every edition
+	outcomes = set(outcome.values())
+	res["outcome"] = outcomes.pop() if len(outcomes) == 1 else outcome
 	if raw["warning"] and v == "accept":
 		res["warning"] = raw["warning"]
 	return res
 
 
-def discriminating(t: Test, impl: Impl) -> bool:
-	"""The editions contradict each other on this file, in what the implementation is judged on.
-
-	For a decoder: they expect different pixels, or one expects none. A difference in allowed outcomes
-	alone is not a contradiction: the chunks the third edition adds (APNG, cICP) are unknown ancillary
-	chunks to the second, which changes what a fault in them means but not what image the file holds.
-	For a validator: one edition's datastream conforms and the other's doesn't.
-	"""
-	return pixels_differ(t) if impl.pixels else t.conforms[2] != t.conforms[3]
+ACCEPTED = ("pixels", "wrong", "accept")  # the outcomes of an accepted file (a validator's acceptance is `pixels`)
 
 
-def pixels_differ(t: Test) -> bool:
-	return t.hashes[2][:1] != t.hashes[3][:1]
+def judge_test(impls: list[Impl], raw: dict[str, dict], reading: expect.Reading) -> dict[str, dict]:
+	"""judge() of every column's run on one test (`raw`: column name -> run), labelling each accepted decoder
+	output once per distinct input of label()."""
+	labelled: dict[tuple, tuple] = {}
+	out = {}
+	for impl in impls:
+		r = raw[impl.name]
+		key = None
+		if r["verdict"] == "accept" and impl.pixels:
+			key = (r["image"][0], r["maxval"], impl.max_depth)
+			if key not in labelled:
+				labelled[key] = label(reading, r["image"], r["maxval"], impl.max_depth)
+		out[impl.name] = judge(impl, r, reading, labelled.get(key))
+	return out
 
 
-def summarize(impl: Impl, results: dict[str, dict], tests: list[Test]) -> dict:
-	disc = {t.id for t in tests if discriminating(t, impl)}
-	s: dict = {"must": 0, "should": 0, "pass": 0}
-	for r in results.values():
-		s[r["worst"]] += 1
-	only = {ed: [t for t in disc if results[t]["editions"] == [ed]] for ed in EDITIONS}
-	# The edition an implementation follows where the editions contradict each other. A test it fails
-	# under both editions is a bug, not evidence of an edition; "mixed" is following each on different tests.
-	consistent = [ed for ed in EDITIONS if all(ed in results[t]["editions"] for t in disc)]
-	if consistent:
-		s["edition"] = "/".join(f"{ed}" for ed in consistent)
-	elif only[2] and only[3]:
-		s["edition"] = "mixed"
-	elif only[2] or only[3]:
-		s["edition"] = "2" if only[2] else "3"
-	else:
-		s["edition"] = "neither"
-	s["edition_tests"] = {str(ed): sorted(only[ed]) for ed in EDITIONS}
+def summarize(results: dict[str, dict], conforms: dict[str, dict[str, bool]]) -> dict:
+	"""Per lens, how many tests the column passes and fails, and on how many files that do not conform it
+	was silent (accepted them without a warning; no severity, an observation); the properties of its
+	matches; and per choice topic, how many tests it resolved with each option (the option every
+	interpretation it matched shares). `conforms`: test id -> lens -> whether the file conforms."""
+	s: dict = {lens: {"must": 0, "should": 0, "pass": 0, "silent": 0} for lens in LENSES}
+	for tid, r in results.items():
+		for lens in LENSES:
+			s[lens][r["severity"][lens]] += 1
+			outcome = r["outcome"] if isinstance(r["outcome"], str) else r["outcome"][lens]
+			if outcome in ACCEPTED and not conforms[tid][lens] and not r.get("warning"):
+				s[lens]["silent"] += 1
+	labels = [r["label"] for r in results.values() if isinstance(r.get("label"), dict)]
 	for prop in ("alpha0", "16to8"):
-		seen = sorted({r[prop] for r in results.values() if prop in r})
+		seen = sorted({l[prop] for l in labels if prop in l})
 		if seen:
 			s[prop] = seen
+	strict = sum(1 for r in results.values() if r.get("strict"))
+	if strict:
+		s["strict"] = strict
+	choices: dict[str, dict[str, int]] = {}
+	for l in labels:
+		shared = set.intersection(*(set() if c == "none" else set(c.split(",")) for c in l["choices"]))
+		for item in sorted(shared):
+			topic, option = item.split(":")
+			choices.setdefault(topic, {}).setdefault(option, 0)
+			choices[topic][option] += 1
+	s["choices"] = choices
 	return s
 
 
@@ -436,10 +397,9 @@ def main() -> None:
 	tests = load_manifest(args.manifest)
 	assert tests, f"{args.manifest} holds no tests"
 	impls = load_impls(args.head)
-	refs = {ed: f"reference-ed{ed}" for ed in EDITIONS}
 	if args.impls:
 		wanted = set(args.impls)
-		impls = [i for i in impls if i.name in wanted or i.project in wanted or i.name in refs.values()]
+		impls = [i for i in impls if i.name in wanted or i.project in wanted or i.name in REFERENCES.values()]
 	if not args.no_build:
 		build(impls, set(args.rebuild) or ({"all"} if args.rebuild == [] and "--rebuild" in sys.argv else set()))
 	avail = []
@@ -449,7 +409,7 @@ def main() -> None:
 			print(f"[skip] {impl.name}: {why}", file=sys.stderr)
 		else:
 			avail.append(impl)
-	assert all(any(i.name == r for i in avail) for r in refs.values()), "the reference decoder must be runnable"
+	assert set(REFERENCES.values()) <= {i.name for i in avail}, "the reference decoder must be runnable"
 	memcheck = not args.no_memcheck and shutil.which("valgrind") is not None
 	if not args.no_memcheck and not memcheck:
 		print("[memcheck] valgrind not found; memory pass skipped", file=sys.stderr)
@@ -461,9 +421,9 @@ def main() -> None:
 	for name, why in sorted(missing.items()):
 		print(f"[skip] {name}: not installed ({why})", file=sys.stderr)
 	avail = [i for i in avail if i.name not in missing]
-	assert all(any(i.name == r for i in avail) for r in refs.values()), "the reference decoder must be runnable"
+	assert set(REFERENCES.values()) <= {i.name for i in avail}, "the reference decoder must be runnable"
 	print(f"[run] {len(raw)} results in {time.monotonic() - t0:.0f} s", file=sys.stderr)
-	_judge_and_report(args, tests, avail, refs, raw, memcheck)
+	_judge_and_report(args, tests, avail, raw, memcheck)
 
 
 def run_all(avail: list[Impl], tests: list[Test], base: Path, memcheck: bool, jobs: int, reuse: set[str] = frozenset()
@@ -499,51 +459,71 @@ def run_all(avail: list[Impl], tests: list[Test], base: Path, memcheck: bool, jo
 	return raw, missing
 
 
-def _judge_and_report(args, tests: list[Test], avail: list[Impl], refs: dict[int, str], raw: dict, memcheck: bool) -> None:
+def _judge_and_report(args, tests: list[Test], avail: list[Impl], raw: dict, memcheck: bool) -> None:
 	problems = []
-	expected: dict[str, dict[int, tuple | None]] = {}
-	alts: dict[str, dict[int, list[tuple[str, tuple]]]] = {}
-	ref_impls = {ed: next(i for i in avail if i.name == refs[ed]) for ed in EDITIONS}
-	for t in tests:
-		alts[t.id] = reference_alternatives(ref_impls, args.manifest.parent / t.file, raw[(refs[3], t.id)]["stdout"])
-		expected[t.id] = {}
-		for ed in EDITIONS:
-			r = raw[(refs[ed], t.id)]
-			want = r["image"] if r["verdict"] == "accept" else None
-			expected[t.id][ed] = want
-			got_hash = want[0] if want is not None else None
-			if (got_hash is None) != (not t.hashes[ed]) or (got_hash and got_hash != t.hashes[ed][0]):
-				problems.append(f"{t.id}: reference (edition {ed}) output {got_hash} does not match the manifest's {t.hashes[ed][:1]}")
-		if not args.no_trace:
-			# expect.py declares what the file reaches under either edition
-			missing = set(t.reaches) - set().union(*(reached_of(raw[(refs[ed], t.id)]["stdout"]) for ed in EDITIONS))
-			if not t.reaches:
-				problems.append(f"{t.id}: declares no clauses reached")
-			elif missing:
-				problems.append(f"{t.id}: no longer reaches {', '.join(sorted(missing))}")
-
-	results = {impl.name: {t.id: judge(t, impl, raw[(impl.name, t.id)], expected[t.id], alts[t.id]) for t in tests} for impl in avail}
+	results: dict[str, dict[str, dict]] = {impl.name: {} for impl in avail}
+	report_tests = []
 	clauses = {}
 	with open(ROOT / "spec" / "clauses.tsv", newline="") as f:
 		for r in csv.DictReader(f, delimiter="\t"):
 			clauses[r["id"]] = r["statement"]
+	derived = [k for k in expect.FIELDS if k not in ("id", "file", "clause", "reaches", "description")]
+	for t in tests:
+		file = args.manifest.parent / t.file
+		reading = expect.reading(file)
+		fresh = expect.row(reading, file, args.manifest.parent)
+		declared = {"images": t.images, "strict": t.strict} | {f"conforms{lens}": "yes" if t.conforms[lens] else "no" for lens in LENSES} \
+			| {f"expect{lens}": t.expectation[lens] for lens in LENSES}
+		stale = [k for k in derived if declared[k] != fresh[k]]
+		if stale:
+			problems.append(f"{t.id}: the manifest's {', '.join(stale)} differ from the reference decoder's (uv run expect.py)")
+		if not args.no_trace:
+			missing = set(t.reaches) - reading.diagnostics.reached
+			if not t.reaches:
+				problems.append(f"{t.id}: declares no clauses reached")
+			elif missing:
+				problems.append(f"{t.id}: no longer reaches {', '.join(sorted(missing))}")
+		test_raw = {impl.name: raw[(impl.name, t.id)] for impl in avail}
+		judged = judge_test(avail, test_raw, reading)
+		buckets: dict[tuple, dict] = {}
+		for impl in avail:
+			res = results[impl.name][t.id] = judged[impl.name]
+			if "label" in res:
+				digest = test_raw[impl.name]["image"][0]
+				tag = res["label"] if res["label"] is not None else "unexplained"
+				b = buckets.setdefault((digest, json.dumps(tag, sort_keys=True)), {"label": tag, "digest": digest, "columns": []})
+				b["columns"].append(impl.name)
+		for lens, name in REFERENCES.items():
+			ref, verdict = judged[name], reading.verdicts[lens]
+			outcome = ref["outcome"] if isinstance(ref["outcome"], str) else ref["outcome"][lens]
+			image = test_raw[name]["image"] if outcome == "pixels" else None
+			want = pnglens.preferred(reading.interpretations).digest if verdict.expectation != "must-reject" and verdict.has_image else None
+			if ref["severity"][lens] != "pass" or (image[0] if image else None) != want:
+				problems.append(f"{t.id}: {name} ({outcome}, {ref['severity'][lens]} under lens {lens}) is not the reference "
+					f"decoder read through lens {lens} ({'its preferred interpretation' if want else 'a rejection'})")
+		report_tests.append({
+			"id": t.id, "file": t.file, "clause": t.clause, "statement": clauses.get(t.clause, ""), "description": t.description,
+			"expectation": {lens: v.expectation for lens, v in reading.verdicts.items()},
+			"conforms": {lens: v.conforms for lens, v in reading.verdicts.items()},
+			"strict": [n for n in t.strict.split(",") if n],
+			"interpretations": {expect.choices_text(i.choices): i.digest for i in reading.interpretations},
+			"buckets": sorted(({"label": b["label"], "digest": b["digest"], "count": len(b["columns"]), "columns": b["columns"]}
+				for b in buckets.values()), key=lambda b: (-b["count"], b["digest"])),
+		})
 	report = {
 		"generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
 		"host": os.uname().sysname + " " + os.uname().machine,
 		"memcheck": memcheck,
+		"lenses": list(LENSES),
 		"problems": problems,
 		"implementations": [{
 			"name": i.name, "project": i.project, "variant": i.variant, "lineage": i.lineage,
 			"version": version_of(i), "revision": i.revision, "notes": i.notes, "pixels": i.pixels,
 			"max_depth": i.max_depth, "memcheck": memcheck and i.memcheck,
-			"summary": summarize(i, results[i.name], tests),
+			"summary": summarize(results[i.name], {t["id"]: t["conforms"] for t in report_tests}),
 		} for i in avail],
-		"tests": [{
-			"id": t.id, "file": t.file, "clause": t.clause, "statement": clauses.get(t.clause, ""),
-			"description": t.description, "allowed": {str(ed): t.allowed[ed] for ed in EDITIONS},
-			"discriminating": pixels_differ(t), "conforms": {str(ed): t.conforms[ed] for ed in EDITIONS},
-		} for t in tests],
-		"results": {name: {tid: {k: v for k, v in r.items()} for tid, r in rs.items()} for name, rs in results.items()},
+		"tests": report_tests,
+		"results": results,
 	}
 	args.out.mkdir(parents=True, exist_ok=True)
 	(args.out / "report.json").write_text(json.dumps(report, indent="\t", ensure_ascii=False) + "\n")

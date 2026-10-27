@@ -487,10 +487,12 @@ class Parser:
 			self.check(all(32 <= b <= 126 or b >= 161 for b in data), field.clause, "string is not printable Latin-1", kind=Fault.VALUE)
 			return data.decode("latin-1")
 		if field.kind == "language":
-			# 11.3.3.4 "well-formed language tag defined by [BCP47]"; edition 2 "defined by [RFC-3066]".
+			# 11.3.3.4 "well-formed language tag defined by [BCP47]"; 2nd ed. 11.3.3.4 "defined by [RFC-3066]".
+			# Each text's grammar has its own clause.
 			value = data.decode("latin-1")
-			self.check(not value or LANGUAGE_TAG[self.d.edition].fullmatch(value) is not None,
-				"11.3.3.4#language", f"language tag {value!r} does not match the edition's grammar", kind=Fault.VALUE)
+			for grammar, clause in (("BCP 47", "11.3.3.4#language"), ("RFC 3066", "11.3.3.4#language-rfc3066")):
+				self.check(not value or LANGUAGE_TAG[grammar].fullmatch(value) is not None,
+					clause, f"language tag {value!r} is not well-formed under {grammar}", kind=Fault.VALUE)
 			return value
 		if field.kind == "latin1":
 			# 11.3.3.1 "restricted to the printable Latin-1 character set plus U+000A LINE FEED"
@@ -522,8 +524,8 @@ _GRANDFATHERED = ("en-gb-oed|i-ami|i-bnn|i-default|i-enochian|i-hak|i-klingon|i-
 _LANGTAG = (r"(?:[a-z]{2,3}(?:-[a-z]{3}){0,3}|[a-z]{4}|[a-z]{5,8})(?:-[a-z]{4})?(?:-(?:[a-z]{2}|[0-9]{3}))?"
 	r"(?:-(?:[a-z0-9]{5,8}|[0-9][a-z0-9]{3}))*(?:-[0-9a-wyz](?:-[a-z0-9]{2,8})+)*(?:-" + _PRIVATE + ")?")
 # RFC 3066 2.1: Primary-subtag = 1*8ALPHA; Subtag = 1*8(ALPHA / DIGIT).
-LANGUAGE_TAG = {3: re.compile(f"{_LANGTAG}|{_PRIVATE}|{_GRANDFATHERED}", re.I | re.A),
-	2: re.compile(r"[a-z]{1,8}(?:-[a-z0-9]{1,8})*", re.I | re.A)}
+LANGUAGE_TAG = {"BCP 47": re.compile(f"{_LANGTAG}|{_PRIVATE}|{_GRANDFATHERED}", re.I | re.A),
+	"RFC 3066": re.compile(r"[a-z]{1,8}(?:-[a-z0-9]{1,8})*", re.I | re.A)}
 
 
 def _icc(p, data):

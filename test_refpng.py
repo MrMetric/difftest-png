@@ -4,12 +4,14 @@
 	uv run python test_refpng.py --manifest --report /tmp/refpng-comparison.json
 
 Both commands enter a systemd scope with MemoryMax=16G and MemorySwapMax=0 before
-running any decodes. --manifest compares EVERY decode/**/*.png in BOTH editions,
-using pam.digest's exact canonical representation; it never runs run.py or the pool.
---baseline DIR compares diagnostics/pixels to saved refpng.py + inflate.py (and pngfields.py
-when present). A saved pngdiagnostics.py and spec/clauses.tsv isolate the baseline's policies.
-With a baseline, stale manifest differences are informational; any baseline
-pixel difference still fails the run.
+running any decodes. --manifest decodes EVERY decode/**/*.png once and compares the manifest's
+derived columns with what expect.py would write for it: every interpretation's choices and digest
+(pam.digest's exact canonical representation), the reached clauses, and each lens's conformance and
+expectation; it never runs run.py or the pool. --baseline DIR compares diagnostics and every
+interpretation's pixels to a saved refpng.py + inflate.py (and pngfields.py when present) with the
+same decode API. A saved pngdiagnostics.py and spec/clauses.tsv isolate the baseline's policies.
+With a baseline, stale manifest differences are informational; any baseline pixel difference still
+fails the run.
 """
 import argparse
 import ast
@@ -26,6 +28,7 @@ import tempfile
 import zlib
 
 import inflate
+import pnglens
 import refpng
 from pngdiagnostics import CONSEQUENCES, Diagnostics, StreamDiagnostics
 from pngfields import (Parser, Values, Ignored, Layout, Struct, UInt, Repeat, Choice,
@@ -46,25 +49,42 @@ def png(metadata=(), *, raw=b"\0\x12\x34\x56", stream=None, width=1, height=1, d
 		+ b"".join(chunk(*c) for c in after) + chunk(b"IEND", b""))
 
 
-def check(data, edition=3, *, warning=None, reject=None, pixels=None, clean=False):
+def check(data, *, warning=None, error=None, no_image=None, pixels=None, clean=False, choices=((),)):
+	"""Decode and return (the first interpretation's image or None, the record).
+
+	`choices` lists every interpretation's choices in order; by default a file has no open decision.
+	`pixels` are the first interpretation's samples. `warning` and `error` name a WARN and an ERR fault."""
 	record = Diagnostics()
 	try:
-		image = refpng.decode(data, edition, diagnostics=record)
-	except refpng.Reject as e:
-		assert e.id == reject, (e.id, reject, str(e))
+		decoded = refpng.decode(data, diagnostics=record)
+	except refpng.NoImage as e:
+		assert e.id == no_image, (e.id, no_image, str(e))
 		assert e.diagnostics is record
 		image = None
 	else:
-		assert reject is None, f"accepted, expected rejection {reject}"
-		assert image.diagnostics is record
+		assert no_image is None, f"decoded, expected NoImage {no_image}"
+		assert decoded.diagnostics is record
+		got = tuple(i.choices for i in decoded.interpretations)
+		assert got == tuple(choices), (got, choices)
+		image = decoded.interpretations[0].image
 		if pixels is not None:
 			assert tuple(image.samples) == tuple(pixels), (tuple(image.samples), pixels)
 	if warning is not None:
 		assert warning in {id for id, _ in record.warnings}, (warning, record.warnings)
+	if error is not None:
+		assert any(e.id == error and e.level == "ERR" for e in record.events), (error, record.events)
 	if clean:
-		assert not record.warnings and image is not None, record.warnings
+		assert not faults(record) and image is not None, faults(record)
 	assert_reported(record)
 	return image, record
+
+
+def interpretations(data):
+	return {i.choices: tuple(i.image.samples) for i in refpng.decode(data).interpretations}
+
+
+def faults(record):
+	return [e for e in record.events if e.level != "INFO"]
 
 
 def stdout(record):
@@ -75,9 +95,19 @@ def stdout(record):
 
 
 def assert_reported(record):
-	# Exercise the actual downstream consumer, without invoking its run functions.
-	import expect
-	assert not expect.unreported({"stdout": stdout(record)}, CONSEQUENCES)
+	"""Every fault clause the record reaches is reported by a WARN or ERR event, as its id or its cause."""
+	reported = {id for e in record.events if e.level != "INFO" for id in (e.id, e.cause) if id is not None}
+	unreported = {id for id in record.reached if CONSEQUENCES[id] != "none"} - reported
+	assert not unreported, unreported
+
+
+def expectations(record, no_image=False):
+	"""Each lens's expectation for the recorded datastream."""
+	return {name: pnglens.verdict(record, lens, no_image).expectation for name, lens in pnglens.LENSES.items()}
+
+
+def both(expectation):
+	return {name: expectation for name in pnglens.LENSES}
 
 
 def test_diagnostic_invariant():
@@ -144,7 +174,7 @@ def test_layout_invariant():
 	finally:
 		del refpng.CHUNKS[name]
 	# Nested and repeated fields use exactly the same rule.
-	d = refpng._State(3, Diagnostics())
+	d = refpng._State(Diagnostics())
 	schema = Layout(Struct((("entries", Repeat(Struct((("short", UINT16), ("long", UInt(4)))), 2)),)))
 	try:
 		Parser(d, b"teST", struct.pack(">HIHI", 65535, 7, 1, 0xffffffff), schema).parse()
@@ -173,18 +203,16 @@ SINGLETON_STREAM = bytes.fromhex("7801000200fdff007f05c0010500000000a0ffaf030081
 
 def test_audit_singleton():
 	assert zlib.decompress(SINGLETON_STREAM) == b"\0\x7f"
-	for ed in (2, 3):
-		check(SINGLETON_PNG, ed, pixels=(127, 127, 127, 255), warning="rfc1951-3.2.2#one-literal-code")
-		check(png(stream=SINGLETON_STREAM, colour=0), ed, pixels=(127, 127, 127, 255))
+	check(SINGLETON_PNG, pixels=(127, 127, 127, 255), warning="rfc1951-3.2.2#one-literal-code")
+	check(png(stream=SINGLETON_STREAM, colour=0), pixels=(127, 127, 127, 255))
 
 
 def test_audit_uint31():
 	cases = ((b"gAMA", struct.pack(">I", 0x80000000)),
 		(b"cHRM", struct.pack(">8I", *([0x80000000] * 8))),
 		(b"pHYs", struct.pack(">IIB", 0x80000000, 1, 1)))
-	for ed in (2, 3):
-		for case in cases:
-			check(png((case,)), ed, warning="7.1#uint31", pixels=(18, 52, 86, 255))
+	for case in cases:
+		check(png((case,)), warning="7.1#uint31", pixels=(18, 52, 86, 255))
 	# Derive mutation positions from the layouts themselves, including every edition-3 uint31 field.
 	def offsets(field, base=0):
 		if isinstance(field, UInt):
@@ -216,10 +244,10 @@ def test_audit_uint31():
 		for pos in positions:
 			body = valid.copy()
 			body[pos:pos + 4] = b"\x80\0\0\0"
-			d = refpng._State(3, Diagnostics())
+			d = refpng._State(Diagnostics())
 			try:
 				Parser(d, name, bytes(body), schema, fatal=name == b"IHDR").parse()
-			except (Ignored, refpng.Reject):
+			except (Ignored, refpng.NoImage):
 				assert "11.2.1#dimensions-range" in d.diagnostics.reached or "7.1#uint31" in d.diagnostics.reached
 			else:
 				raise AssertionError((name, pos, "uint31 escaped validation"))
@@ -228,12 +256,11 @@ def test_audit_uint31():
 
 def test_audit_srgb():
 	bad_chrm = (*refpng.SRGB_CHRM[:-1], 6001)
-	for ed in (2, 3):
-		for metadata in ((b"gAMA", struct.pack(">I", 100000)), (b"cHRM", struct.pack(">8I", *bad_chrm))):
-			for chunks in ((metadata, (b"sRGB", b"\0")), ((b"sRGB", b"\0"), metadata)):
-				check(png(chunks), ed, warning="11.3.2.5#compat-values")
-		check(png(((b"gAMA", struct.pack(">I", 45455)), (b"cHRM", struct.pack(">8I", *refpng.SRGB_CHRM)),
-			(b"sRGB", b"\0"))), ed, clean=True)
+	for metadata in ((b"gAMA", struct.pack(">I", 100000)), (b"cHRM", struct.pack(">8I", *bad_chrm))):
+		for chunks in ((metadata, (b"sRGB", b"\0")), ((b"sRGB", b"\0"), metadata)):
+			check(png(chunks), warning="11.3.2.5#compat-values")
+	check(png(((b"gAMA", struct.pack(">I", 45455)), (b"cHRM", struct.pack(">8I", *refpng.SRGB_CHRM)),
+		(b"sRGB", b"\0"))), clean=True)
 
 
 def itxt(language, text=b"text", *, compressed=False, translated=b"", keyword=b"Comment", method=0):
@@ -241,10 +268,10 @@ def itxt(language, text=b"text", *, compressed=False, translated=b"", keyword=b"
 
 
 def test_audit_language():
+	# Each text's grammar has its own clause: BCP 47 (3rd edition) and RFC 3066 (2nd edition).
 	for language in (b"123", b"en-a", b"x"):
-		check(png(((b"iTXt", itxt(language)),)), 3, warning="11.3.3.4#language")
-		check(png(((b"iTXt", itxt(language)),)), 2,
-			warning="11.3.3.4#language" if language == b"123" else None, clean=language != b"123")
+		_, record = check(png(((b"iTXt", itxt(language)),)), warning="11.3.3.4#language")
+		assert ("11.3.3.4#language-rfc3066" in record.reached) == (language == b"123"), language
 	# Exercise all ABNF branches and the required-content boundary of each branch.
 	valid = (b"", b"en", b"zh-cmn-Hans-CN", b"abc-def-ghi-jkl-Latn-123-1996-a-aa-x-z", b"abcd", b"abcdefgh",
 		b"de-CH-1901", b"sl-rozaj-biske", b"en-a-foo-b-bar-x-a", b"x-private", b"EN-gb-OED", b"i-klingon", b"sgn-BE-FR")
@@ -253,6 +280,11 @@ def test_audit_language():
 		check(png(((b"iTXt", itxt(language)),)), clean=True)
 	for language in invalid:
 		check(png(((b"iTXt", itxt(language)),)), warning="11.3.3.4#language")
+	for language in (b"abcdefghi", b"en-", b"en--US", b"en_uk", b"en-\xff", b"123"):
+		check(png(((b"iTXt", itxt(language)),)), warning="11.3.3.4#language-rfc3066")
+	for language in valid + (b"en-a", b"en-US-Latn", b"en-a-b"):
+		_, record = check(png(((b"iTXt", itxt(language)),)))
+		assert "11.3.3.4#language-rfc3066" not in record.reached, language
 
 
 def icc(tags=()):
@@ -273,10 +305,9 @@ def test_audit_icc():
 	audit[16:20] = b"RGB "
 	def data(profile):
 		return png(((b"iCCP", b"profile\0\0" + zlib.compress(profile)),))
-	for ed in (2, 3):
-		check(data(audit), ed, warning="11.3.2.3#profile")
-		check(data(icc()), ed, clean=True)
-		check(data(icc((b"text\0\0\0\0example\0",))), ed, clean=True)
+	check(data(audit), warning="11.3.2.3#profile")
+	check(data(icc()), clean=True)
+	check(data(icc((b"text\0\0\0\0example\0",))), clean=True)
 	# Every framing assertion has an independent witness; signatures alone cannot certify content.
 	valid = icc((b"text\0\0\0\0example\0",))
 	for pos, replacement in ((0, b"\0"*4), (36, b"nope"), (128, b"\xff"*4),
@@ -301,7 +332,6 @@ def tiff(order="<", entries=(), *, next_ifd=0, tail=b""):
 
 def test_audit_exif():
 	check(png(((b"eXIf", b"II*\0"),)), warning="11.3.4.5#structure")
-	check(png(((b"eXIf", b"II*\0"),)), 2, warning="11.3.4.5#structure")
 	for order in ("<", ">"):
 		check(png(((b"eXIf", tiff(order)),)), warning="11.3.4.5#structure")
 		check(png(((b"eXIf", tiff(order, ((0x0100, 4, 1, 1),))),)), clean=True)
@@ -323,25 +353,24 @@ def long_distance_stream():
 
 
 def test_audit_window(*, include_fixture=True):
-	import expect
 	raw, stream = long_distance_stream()
-	for ed in (2, 3):
-		img, record = check(png(stream=stream, width=1023, colour=0), ed, warning="rfc1950-2.2#window-exceeded")
-		assert tuple(img.samples[0::4]) == tuple(raw[1:])
-		assert expect.outcomes({"verdict": "accept", "stdout": stdout(record)}, CONSEQUENCES) == "pixels=pass,reject=pass"
-		if include_fixture:
-			fixture = ROOT / "decode/i_zlib-cinfo-0-long-distance.png"
-			assert fixture.is_file()
-			check(fixture.read_bytes(), ed, warning="rfc1950-2.2#window-exceeded")
-	# A subsequent bad Adler cannot erase the recovered window fault.
+	img, record = check(png(stream=stream, width=1023, colour=0), warning="rfc1950-2.2#window-exceeded")
+	assert tuple(img.samples[0::4]) == tuple(raw[1:])
+	assert expectations(record) == both("may-reject")
+	if include_fixture:
+		fixture = ROOT / "decode/i_zlib-cinfo-0-long-distance.png"
+		assert fixture.is_file()
+		check(fixture.read_bytes(), warning="rfc1950-2.2#window-exceeded")
+	# A subsequent bad Adler cannot erase the recovered window fault; the complete data are decoded.
 	bad = stream[:-1] + bytes((stream[-1] ^ 1,))
-	check(png(stream=bad, width=1023, colour=0), warning="rfc1950-2.2#window-exceeded", reject="rfc1950-2.3#adler32")
+	img, _ = check(png(stream=bad, width=1023, colour=0), warning="rfc1950-2.2#window-exceeded", error="rfc1950-2.3#adler32")
+	assert tuple(img.samples[0::4]) == tuple(raw[1:])
 
 
 def test_exit_paths():
 	# Truncation is recorded before a later invalid filter or short-row rejection can interrupt decoding.
 	for raw, fatal in ((b"\x05\x7f", "9.2#filter-types"), (b"\0", "13.1#data-short")):
-		_, record = check(png(stream=zlib.compress(raw)[:-4], colour=0), warning="10.1#zlib-check", reject=fatal)
+		_, record = check(png(stream=zlib.compress(raw)[:-4], colour=0), warning="10.1#zlib-check", no_image=fatal)
 		assert "rfc1950-2.2#end-in-adler32" in record.reached
 	# Both the API and CLI preserve accumulated faults on unexpected exceptions, including MemoryError.
 	data = png(stream=zlib.compress(b"\0\x7f")[:-4], colour=0)
@@ -394,35 +423,29 @@ def test_content_types():
 	_, stream = long_distance_stream()
 	bad = stream[:-1] + bytes((stream[-1] ^ 1,))
 	_, record = check(png(((b"zTXt", b"key\0\0" + bad),), raw=b"\x05\0\0\0"),
-		warning="rfc1950-2.2#window-exceeded", reject="9.2#filter-types")
+		warning="rfc1950-2.2#window-exceeded", no_image="9.2#filter-types")
 	assert "rfc1950-2.3#adler32" in record.reached
 	assert "11.3.3.3#zlib" in {id for id, _ in record.warnings}
 	check(png(((b"iTXt", itxt(b"en", method=17)),)), clean=True)
 
 
 def test_owner_policies():
-	for ed in (2, 3):
-		# The sample mask is required under both editions.
-		check(png(((b"tRNS", b"\xff\x7f"), (b"bKGD", b"\xff\x7f")), raw=b"\0\x7f", colour=0), ed,
-			pixels=(127, 127, 127, 0), clean=True)
-		indexed = png(((b"PLTE", b"\x12\x34\x56"),), raw=b"\0\x01", colour=3)
-		if ed == 2:
-			check(indexed, ed, reject="11.2.2#index-in-range")
-		else:
-			check(indexed, ed, warning="13.1#index-opaque-black", pixels=(0, 0, 0, 255))
-		# CRC failure drops ancillary tRNS; recomputing the CRC uses its pixels instead.
-		valid = png(((b"tRNS", b"\0\x12\0\x34\0\x56"),))
-		bad = bytearray(valid)
-		pos = bad.index(b"tRNS") + 4 + 6
-		bad[pos] ^= 1
-		check(bytes(bad), ed, warning="13.1#crc-ancillary", pixels=(18, 52, 86, 255))
-		check(valid, ed, pixels=(18, 52, 86, 0))
-		check(png()[:-12], ed, warning="11.2#iend-present")
-		check(png() + b"extra", ed, warning="11.2#iend-last")
-		check(png(raw=b"\0\x12\x34\x56extra"), ed, warning="13.1#data-long")
-		check(png(raw=b"\0\x12"), ed, reject="13.1#data-short")
-		check(png(((b"acTL", b"\0" * 8),)), ed,
-			warning="11.3.6.1#num-frames-zero" if ed == 3 else None, pixels=(18, 52, 86, 255))
+	# The sample mask is required under both editions.
+	check(png(((b"tRNS", b"\xff\x7f"), (b"bKGD", b"\xff\x7f")), raw=b"\0\x7f", colour=0),
+		pixels=(127, 127, 127, 0), clean=True)
+	# CRC failure: the first interpretation drops ancillary tRNS; the second uses it as stored, like a recomputed CRC.
+	valid = png(((b"tRNS", b"\0\x12\0\x34\0\x56"),))
+	bad = bytearray(valid)
+	pos = bad.index(b"tRNS") + 4 + 6
+	bad[pos] ^= 1
+	check(bytes(bad), warning="13.1#crc-ancillary", pixels=(18, 52, 86, 255), choices=((("crc", "dropped"),), (("crc", "ignored"),)))
+	assert interpretations(bytes(bad))[(("crc", "ignored"),)] == (18, 52, 86, 0)
+	check(valid, pixels=(18, 52, 86, 0))
+	check(png()[:-12], warning="11.2#iend-present")
+	check(png() + b"extra", warning="11.2#iend-last")
+	check(png(raw=b"\0\x12\x34\x56extra"), warning="13.1#data-long")
+	check(png(raw=b"\0\x12"), no_image="13.1#data-short")
+	check(png(((b"acTL", b"\0" * 8),)), warning="11.3.6.1#num-frames-zero", pixels=(18, 52, 86, 255))
 
 
 def test_small_pixels():
@@ -479,9 +502,8 @@ def test_small_pixels():
 								encoded.append((value - pred) & 255)
 							raw += bytes((filter_type,)) + encoded
 							prev = line
-					for ed in (2, 3):
-						check(png(metadata, raw=bytes(raw), width=width, height=height, colour=colour, depth=depth, interlace=interlace),
-							ed, pixels=pixels, clean=True)
+					check(png(metadata, raw=bytes(raw), width=width, height=height, colour=colour, depth=depth, interlace=interlace),
+						pixels=pixels, clean=True)
 
 
 def require_memory_scope():
@@ -532,61 +554,57 @@ def load_baseline(directory):
 
 
 def compare_manifest(report_path, baseline=None):
+	"""Decode every file once and compare the manifest's derived columns with this decode's (expect.row_for):
+	`images` (every interpretation's choices and digest), `reaches`, `clause`, `strict` and each lens's
+	`conforms` and `expect`. A difference in `images` fails the run; the others are listed."""
 	import csv
 	from collections import Counter
 	import expect
-	import pam
 	with (ROOT / "decode/manifest.tsv").open(newline="") as f:
 		rows = {r["file"]: r for r in csv.DictReader(f, delimiter="\t")}
 	files = sorted((ROOT / "decode").rglob("*.png"))
 	assert {str(p.relative_to(ROOT / "decode")) for p in files} == set(rows), "manifest and PNG file sets differ"
-	result = {"files": len(files), "edition_runs": 0, "hash_differences": [], "outcome_differences": [],
-		"baseline_pixel_differences": [], "baseline_diagnostic_differences": [], "projected_outcome_differences": []}
-	def run_one(module, data, ed):
+	derived = [k for k in expect.FIELDS if k not in ("id", "file", "description")]
+	result = {"files": len(files), "image_differences": [], "column_differences": [],
+		"baseline_pixel_differences": [], "baseline_diagnostic_differences": []}
+	def run_one(module, data):
 		try:
-			img = module.decode(data, ed)
-		except module.Reject as e:
-			warnings, reached, verdict, digest, fatal = e.warnings, e.reached, "reject", "", e.id
-			fatal_message = str(e)
+			decoded = module.decode(data)
+		except module.NoImage as e:
+			record, interpretations = e.diagnostics, []
 		else:
-			warnings, reached, verdict, fatal = img.warnings, img.reached, "accept", None
-			digest = pam.digest(pam.rgba16(pam.parse(module.to_pam(img))))
-		lines = ["INFO reached=" + ",".join(sorted(reached)), *(f"WARN [{id}] {msg}" for id, msg in warnings)]
-		if fatal:
-			lines.append(f"ERR [{fatal}] {fatal_message}")
-		raw = {"stdout": "\n".join(lines), "verdict": verdict, "detail": ""}
-		silent = sorted(expect.unreported(raw, CONSEQUENCES))
+			record = decoded.diagnostics
+			interpretations = [(",".join(f"{t}:{o}" for t, o in i.choices), module.digest(i.image)) for i in decoded.interpretations]
 		if module is refpng:
-			assert not silent, (module.__name__, ed, silent)
-		return {"diagnostics": lines[1:], "reached": sorted(reached), "unreported": silent, "hash": digest, "outcome": expect.outcomes(raw, CONSEQUENCES), "projected_outcome": outcomes_after_unaffected(raw), "faults": sorted(set(id for id, _ in warnings) | ({fatal} if fatal else set()))}
+			assert_reported(record)
+		return {"diagnostics": [l for l in stdout(record).splitlines() if not l.startswith("INFO ")], "reached": sorted(record.reached),
+			"interpretations": interpretations}
 	for index, file in enumerate(files):
 		name = str(file.relative_to(ROOT / "decode"))
-		data, row = file.read_bytes(), rows[name]
-		for ed in (2, 3):
-			actual = run_one(refpng, data, ed)
-			result["edition_runs"] += 1
-			where = {"file": name, "edition": ed}
-			if actual["hash"] not in row[f"hash{ed}"].split("|"):
-				result["hash_differences"].append(where | {"expected": row[f"hash{ed}"], "actual": actual})
-			if actual["outcome"] != row[f"ed{ed}"]:
-				result["outcome_differences"].append(where | {"expected": row[f"ed{ed}"], "actual": actual})
-			if actual["projected_outcome"] != row[f"ed{ed}"]:
-				result["projected_outcome_differences"].append(where | {"expected": row[f"ed{ed}"], "actual": actual})
-			if baseline:
-				old = run_one(baseline, data, ed)
-				if old["hash"] != actual["hash"]:
-					result["baseline_pixel_differences"].append(where | {"before": old, "after": actual})
-				if (old["diagnostics"], old["reached"], old["outcome"], old["unreported"]) != (actual["diagnostics"], actual["reached"], actual["outcome"], actual["unreported"]):
-					result["baseline_diagnostic_differences"].append(where | {"before": old, "after": actual,
-						"added": list((Counter(actual["diagnostics"]) - Counter(old["diagnostics"])).elements()),
-						"removed": list((Counter(old["diagnostics"]) - Counter(actual["diagnostics"])).elements())})
+		row = rows[name]
+		fresh = expect.row_for(file, ROOT / "decode")
+		where = {"file": name}
+		if fresh["images"] != row["images"]:
+			result["image_differences"].append(where | {"expected": row["images"], "actual": fresh["images"]})
+		changed = {k: {"expected": row[k], "actual": fresh[k]} for k in derived if k != "images" and fresh[k] != row[k]}
+		if changed:
+			result["column_differences"].append(where | changed)
+		if baseline:
+			data = file.read_bytes()
+			actual, old = run_one(refpng, data), run_one(baseline, data)
+			if old["interpretations"] != actual["interpretations"]:
+				result["baseline_pixel_differences"].append(where | {"before": old, "after": actual})
+			if (old["diagnostics"], old["reached"]) != (actual["diagnostics"], actual["reached"]):
+				result["baseline_diagnostic_differences"].append(where | {"before": old, "after": actual,
+					"added": list((Counter(actual["diagnostics"]) - Counter(old["diagnostics"])).elements()),
+					"removed": list((Counter(old["diagnostics"]) - Counter(actual["diagnostics"])).elements())})
 		if index % 25 == 0:
-			print(f"Compared {index + 1}/{len(files)} files, both editions", flush=True)
+			print(f"Compared {index + 1}/{len(files)} files", flush=True)
 		if report_path:
 			report_path.write_text(json.dumps(result, indent=2) + "\n")
 	print(json.dumps(result, indent=2))
 	if baseline is None:
-		assert not result["hash_differences"], "manifest pixel differences require review; see report"
+		assert not result["image_differences"], "manifest image differences require review; see report"
 	assert not result["baseline_pixel_differences"], "baseline pixel differences require review; see report"
 
 
@@ -604,8 +622,8 @@ def main():
 		test_value_then_layout_fault, test_dependent_choice, test_dependent_count, test_dependent_compression,
 		test_embedded_value_faults, test_fault_classification_and_dispatch,
 		test_hdist_policy, test_corrupt_image_tail, test_structure_before_crc, test_diagnostic_severity,
-		test_cicp_code_points, test_conformance_naming, test_extensions, test_exif_editions,
-		test_idot, test_conformance_mutations):
+		test_cicp_code_points, test_conformance_naming, test_extensions, test_exif,
+		test_idot, test_interpretations, test_conformance_mutations):
 		test()
 		print(test.__name__ + ": passed", flush=True)
 	if args.manifest:
@@ -614,25 +632,22 @@ def main():
 
 
 def test_independent_chunk_faults():
-	import expect
 	_, stream = long_distance_stream()
-	for ed in (2, 3):
-		_, record = check(png(((b"zTXt", b"Two  spaces\0\0" + stream),)), ed)
-		ids = {id for id, _ in record.warnings}
-		assert {"11.3.3.1#keyword-spaces", "rfc1950-2.2#window-exceeded"} <= ids, ids
-		assert expect.outcomes({"verdict": "accept", "stdout": stdout(record)}, CONSEQUENCES) == "pixels=pass,reject=pass"
+	_, record = check(png(((b"zTXt", b"Two  spaces\0\0" + stream),)))
+	ids = {id for id, _ in record.warnings}
+	assert {"11.3.3.1#keyword-spaces", "rfc1950-2.2#window-exceeded"} <= ids, ids
+	assert expectations(record) == both("may-reject")
 
 
 def test_value_then_layout_fault():
 	# r_ztxt-len-1's complete zTXt body: empty keyword and null, with no method byte.
-	for ed in (2, 3):
-		_, record = check(png(((b"zTXt", bytes.fromhex("00")),)), ed)
-		ids = {id for id, _ in record.warnings}
-		assert ids == {"11.3.3.1#keyword-length", "11.3.3.3#separator"}, ids
+	_, record = check(png(((b"zTXt", bytes.fromhex("00")),)))
+	ids = {id for id, _ in record.warnings}
+	assert ids == {"11.3.3.1#keyword-length", "11.3.3.3#separator"}, ids
 
 
 def parse_faults(schema, data, *, state=None):
-	d = state if state is not None else refpng._State(3, Diagnostics())
+	d = state if state is not None else refpng._State(Diagnostics())
 	parser = Parser(d, b"teST", data, schema)
 	try:
 		parser.parse()
@@ -648,7 +663,7 @@ def test_dependent_choice():
 	# The method's width is known despite the unusable flag. Language and translated text remain independent.
 	body = b"Comment\0\x02\xff123\0\xff\0" + stream
 	_, record = check(png(((b"iTXt", body),)))
-	assert {id for id, _ in record.warnings} == {"11.3.3.4#flag", "11.3.3.4#language", "11.3.3.4#utf8"}
+	assert {id for id, _ in record.warnings} == {"11.3.3.4#flag", "11.3.3.4#language", "11.3.3.4#language-rfc3066", "11.3.3.4#utf8"}
 	# All branches consume the remainder: an invalid sample depth cannot create an invented entry-length fault.
 	_, record = check(png(((b"sPLT", b"palette\0\x07garbage"),)))
 	assert {id for id, _ in record.warnings} == {"11.3.4.4#depth"}
@@ -681,7 +696,7 @@ def test_dependent_compression():
 	cases = ((b"zTXt", b"Comment\0\x01" + stream, {"11.3.3.3#method"}),
 		(b"iCCP", b"profile\0\x01" + stream, {"11.3.2.3#method"}),
 		(b"iTXt", b"Comment\0\x01\x01" + b"123\0\xff\0" + stream,
-			{"11.3.3.4#method", "11.3.3.4#language", "11.3.3.4#utf8"}))
+			{"11.3.3.4#method", "11.3.3.4#language", "11.3.3.4#language-rfc3066", "11.3.3.4#utf8"}))
 	for name, body, expected in cases:
 		_, record = check(png(((name, body),)))
 		assert {id for id, _ in record.warnings} == expected
@@ -738,7 +753,7 @@ def test_fault_classification_and_dispatch():
 	assert ids == {"13.2#known-length", "7.1#uint31"} and parser.pos == 8
 	assert parser.d.diagnostics.fault_count == 3
 	# A new occurrence of a deduplicated diagnostic still makes its field and chunk unusable.
-	d = refpng._State(3, Diagnostics())
+	d = refpng._State(Diagnostics())
 	schema = refpng.layout(("value", UINT31))
 	for _ in range(2):
 		parse_faults(schema, b"\xff" * 4, state=d)
@@ -763,9 +778,8 @@ def test_fault_classification_and_dispatch():
 	finally:
 		refpng.CHUNKS[b"zTXt"] = original
 	# Fatal critical parsing still stops at its first invalid value.
-	for ed in (2, 3):
-		_, record = check(png(width=0x80000000, height=0x80000001), ed, reject="11.2.1#dimensions-range")
-		assert len(record.events) == 1 and "2147483648" in record.events[0].message
+	_, record = check(png(width=0x80000000, height=0x80000001), no_image="11.2.1#dimensions-range")
+	assert len(record.events) == 1 and "2147483648" in record.events[0].message
 
 
 HDIST31_PNG = bytes.fromhex(
@@ -781,19 +795,15 @@ CORRUPT_TAIL_PNG = bytes.fromhex(
 
 def test_hdist_policy():
 	# RFC 1951 3.3: "A compliant decompressor must accept the full range of possible values", and HDIST's is 1-32.
-	import expect
-	for ed in (2, 3):
-		_, record = check(HDIST31_PNG, ed, clean=True)
-		assert "rfc1951-3.2.7#hdist-over-30" in record.reached
-		assert expect.outcomes({"verdict": "accept", "stdout": stdout(record)}, CONSEQUENCES) == "pixels=pass"
+	_, record = check(HDIST31_PNG, clean=True)
+	assert "rfc1951-3.2.7#hdist-over-30" in record.reached
+	assert expectations(record) == both("display")
 
 
 def test_corrupt_image_tail():
-	import expect
-	for ed in (2, 3):
-		_, record = check(CORRUPT_TAIL_PNG, ed, pixels=(18, 52, 86, 255))
-		assert "rfc1951-3.2.3#distance-too-far" in record.reached
-		assert expect.outcomes({"verdict": "accept", "stdout": stdout(record)}, CONSEQUENCES) == "pixels=pass,reject=pass"
+	_, record = check(CORRUPT_TAIL_PNG, pixels=(18, 52, 86, 255))
+	assert "rfc1951-3.2.3#distance-too-far" in record.reached
+	assert expectations(record) == both("may-reject")
 	# A bad block header, including one whose table construction fails, has the same completion policy.
 	def packed(fields):
 		bits = [value >> i & 1 for value, width in fields for i in range(width)]
@@ -801,23 +811,24 @@ def test_corrupt_image_tail():
 	oversubscribed = packed(((1, 1), (2, 2), (0, 5), (0, 5), (0, 4), *((1, 3),) * 4))
 	def stream(raw, tail):
 		return b"\x78\x01\0" + struct.pack("<HH", len(raw), len(raw) ^ 65535) + raw + tail
-	for ed in (2, 3):
-		for tail, cause in ((b"\x07", "rfc1951-3.2.3#btype-reserved"),
-			(oversubscribed, "rfc1951-3.2.2#over-subscribed")):
-			for raw in (b"\0\x12\x34\x56", b"\0\x12\x34\x56extra"):
-				_, record = check(png(stream=stream(raw, tail)), ed,
-					warning="10.1#zlib-check", pixels=(18, 52, 86, 255))
-				assert any(e.id == "10.1#zlib-check" and e.cause == cause for e in record.events)
-				assert not any(e.level == "ERR" for e in record.events)
-				assert expect.outcomes({"verdict": "accept", "stdout": stdout(record)}, CONSEQUENCES) == "pixels=pass,reject=pass"
-			check(png(stream=stream(b"\0\x12\x34", tail)), ed, reject=cause)
-		# A 2x2 one-bit Adam7 image has three nonempty passes and six bytes, including their filters.
-		check(png(stream=stream(b"\0\0\0\0\0\0", b"\x07"), colour=0, depth=1, width=2, height=2, interlace=1),
-			ed, warning="10.1#zlib-check", pixels=(0, 0, 0, 255) * 4)
-		check(png(stream=stream(b"\0\0\0\0\0", b"\x07"), colour=0, depth=1, width=2, height=2, interlace=1),
-			ed, reject="rfc1951-3.2.3#btype-reserved")
-		valid = zlib.compress(b"\0\x12\x34\x56")
-		check(png(stream=valid[:-1] + bytes((valid[-1] ^ 1,))), ed, reject="rfc1950-2.3#adler32")
+	for tail, cause in ((b"\x07", "rfc1951-3.2.3#btype-reserved"),
+		(oversubscribed, "rfc1951-3.2.2#over-subscribed")):
+		for raw in (b"\0\x12\x34\x56", b"\0\x12\x34\x56extra"):
+			_, record = check(png(stream=stream(raw, tail)),
+				warning="10.1#zlib-check", pixels=(18, 52, 86, 255))
+			assert any(e.id == "10.1#zlib-check" and e.cause == cause for e in record.events)
+			assert not any(e.level == "ERR" for e in record.events)
+			assert expectations(record) == both("may-reject")
+		check(png(stream=stream(b"\0\x12\x34", tail)), no_image=cause)
+	# A 2x2 one-bit Adam7 image has three nonempty passes and six bytes, including their filters.
+	check(png(stream=stream(b"\0\0\0\0\0\0", b"\x07"), colour=0, depth=1, width=2, height=2, interlace=1),
+		warning="10.1#zlib-check", pixels=(0, 0, 0, 255) * 4)
+	check(png(stream=stream(b"\0\0\0\0\0", b"\x07"), colour=0, depth=1, width=2, height=2, interlace=1),
+		no_image="rfc1951-3.2.3#btype-reserved")
+	# A wrong Adler-32 is not a fault after the image: it is recorded at its own clause's level (reject).
+	valid = zlib.compress(b"\0\x12\x34\x56")
+	_, record = check(png(stream=valid[:-1] + bytes((valid[-1] ^ 1,))), error="rfc1950-2.3#adler32", pixels=(18, 52, 86, 255))
+	assert "10.1#zlib-check" not in record.reached
 
 
 def corrupt_crc(name, body):
@@ -827,27 +838,32 @@ def corrupt_crc(name, body):
 
 
 def test_structure_before_crc():
-	import expect
+	"""A chunk's type and position are checked before its type letters and CRC, so a bad CRC cannot hide them."""
 	header = chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
 	idat = chunk(b"IDAT", zlib.compress(b"\0\x12\x34\x56"))
 	indexed = chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 3, 0, 0, 0))
-	for ed in (2, 3):
-		for data, id in (
-			(refpng.SIGNATURE + header + corrupt_crc(b"IHDR", header[8:-4]), "11.2#one-ihdr"),
-			(refpng.SIGNATURE + header + corrupt_crc(b"ABCD", b""), "5.4#unknown-critical"),
-			(refpng.SIGNATURE + corrupt_crc(b"IDAT", b""), "11.2#ihdr-first"),
-			(refpng.SIGNATURE + header + idat + chunk(b"tEXt", b"key\0text") + corrupt_crc(b"IDAT", b""), "11.2.3#consecutive"),
-			(refpng.SIGNATURE + header + corrupt_crc(b"IEND", b""), "11.2#idat-present"),
-			(refpng.SIGNATURE + header + corrupt_crc(b"A\xffCD", b""), "5.4#unknown-critical"),
-			(refpng.SIGNATURE + corrupt_crc(b"a\xffCD", b""), "11.2#ihdr-first"),
-			(refpng.SIGNATURE + corrupt_crc(b"\nfoo", b""), "11.2#ihdr-first"),
-			(refpng.SIGNATURE + corrupt_crc(b"IHDR", b""), "11.2.1#length"),
-			(refpng.SIGNATURE + indexed + corrupt_crc(b"PLTE", b"\0"), "11.2.2#invalid-indexed"),
-			(refpng.SIGNATURE + indexed + corrupt_crc(b"PLTE", b""), "11.2.2#invalid-indexed"),
-			(refpng.SIGNATURE + indexed + corrupt_crc(b"IDAT", b""), "11.2.2#required")):
-			_, record = check(data, ed, reject=id)
-			assert "13.1#crc-critical" not in record.reached and "5.3#type-letters" not in record.reached
-			assert expect.outcomes({"verdict": "reject", "stdout": stdout(record), "detail": ""}, CONSEQUENCES) == "reject=pass"
+	used = ((("crc", "ignored"),),)
+	for data, id, outcome in (
+		(refpng.SIGNATURE + header + corrupt_crc(b"IHDR", header[8:-4]), "11.2#one-ihdr", "11.2#idat-present"),
+		(refpng.SIGNATURE + header + corrupt_crc(b"ABCD", b""), "5.4#unknown-critical", "11.2#idat-present"),
+		(refpng.SIGNATURE + corrupt_crc(b"IDAT", b""), "11.2#ihdr-first", "11.2#ihdr-first"),
+		(refpng.SIGNATURE + header + idat + chunk(b"tEXt", b"key\0text") + corrupt_crc(b"IDAT", b""), "11.2.3#consecutive", used),
+		(refpng.SIGNATURE + header + corrupt_crc(b"IEND", b""), "11.2#idat-present", "11.2#idat-present"),
+		(refpng.SIGNATURE + header + corrupt_crc(b"A\xffCD", b""), "5.4#unknown-critical", "11.2#idat-present"),
+		(refpng.SIGNATURE + corrupt_crc(b"a\xffCD", b""), "11.2#ihdr-first", "11.2#ihdr-first"),
+		(refpng.SIGNATURE + corrupt_crc(b"\nfoo", b""), "11.2#ihdr-first", "11.2#ihdr-first"),
+		(refpng.SIGNATURE + corrupt_crc(b"IHDR", b""), "11.2.1#length", "11.2.1#length"),
+		(refpng.SIGNATURE + indexed + corrupt_crc(b"PLTE", b"\0"), "11.2.2#invalid-indexed", "11.2.2#invalid-indexed"),
+		(refpng.SIGNATURE + indexed + corrupt_crc(b"PLTE", b""), "11.2.2#invalid-indexed", "11.2.2#invalid-indexed"),
+		(refpng.SIGNATURE + indexed + corrupt_crc(b"IDAT", b""), "11.2.2#required", "11.2.2#required")):
+		if isinstance(outcome, str):
+			_, record = check(data, no_image=outcome)
+		else:
+			_, record = check(data, choices=outcome, pixels=(18, 52, 86, 255))
+		ids = [e.id for e in record.events]
+		later = [ids.index(c) for c in ("13.1#crc-critical", "13.1#crc-ancillary", "5.3#type-letters") if c in ids]
+		assert id in ids and all(ids.index(id) < i for i in later), (id, ids)
+		assert expectations(record, no_image=isinstance(outcome, str)) == both("must-reject"), (id, expectations(record))
 
 
 def test_diagnostic_severity():
@@ -868,7 +884,6 @@ def test_diagnostic_severity():
 
 def test_cicp_code_points():
 	"""Every ColourPrimaries and TransferCharacteristics value, against H.273 (07/2024) Tables 2 and 3."""
-	import expect
 	reserved = {
 		"11.3.2.6#primaries": {0, 3, *range(13, 22), *range(23, 256)},
 		"11.3.2.6#transfer": {0, 3, *range(19, 256)},
@@ -877,28 +892,16 @@ def test_cicp_code_points():
 		for value in range(256):
 			fields = (value, 1, 0, 1) if clause.endswith("primaries") else (1, value, 0, 1)
 			data = png(((b"cICP", bytes(fields)),))
-			check(data, 2, warning="5.7.2#undefined-public")  # edition 2: an undefined public name
 			if value in bad:
-				_, record = check(data, 3, warning=clause)
+				_, record = check(data, warning=clause)
 				assert "11.3.2.6#cicp" not in record.reached, "a cICP with a reserved code point is ignored"
-				assert expect.outcomes({"verdict": "accept", "stdout": stdout(record), "detail": ""}, CONSEQUENCES) == "pixels=pass,reject=should"
+				assert expectations(record) == both("recover")
 			else:
-				_, record = check(data, 3, clean=True)
+				_, record = check(data, clean=True)
 				assert "11.3.2.6#cicp" in record.reached
 	# Both fields reserved: both faults are reported, and the chunk is still ignored.
-	_, record = check(png(((b"cICP", bytes((200, 200, 0, 1))),)), 3)
+	_, record = check(png(((b"cICP", bytes((200, 200, 0, 1))),)))
 	assert {id for id, _ in record.warnings} == {"11.3.2.6#primaries", "11.3.2.6#transfer"}, record.warnings
-
-
-def outcomes_after_unaffected(raw):
-	"""Review projection while expect.py's owner integrates the unaffected consequence."""
-	import expect
-	lines = []
-	for line in raw["stdout"].splitlines():
-		if line.startswith("WARN [") and CONSEQUENCES[line.split("[", 1)[1].split("]", 1)[0]] == "unaffected":
-			continue
-		lines.append(line)
-	return expect.outcomes(raw | {"stdout": "\n".join(lines)}, CONSEQUENCES)
 
 
 def pcal(*, name=b"calibration", x0=-1, x1=255, equation=0, count=2, unit=b"K", parameters=b"0\0+1.e2"):
@@ -945,70 +948,70 @@ def extension_cases():
 
 
 def test_conformance_naming():
-	for ed in (2, 3):
-		for name in (b"vpAG", b"vpAg"):
-			check(png(((name, b"opaque"),)), ed, clean=True)
-		for name, clause in ((b"vpag", "5.4#reserved-bit"), (b"vPAG", "5.7.2#undefined-public")):
-			_, record = check(png(((name, b"opaque"),)), ed, warning=clause, pixels=(18, 52, 86, 255))
-			assert outcomes_after_unaffected({"stdout": stdout(record), "verdict": "accept", "detail": ""}) == "pixels=pass"
-			if name == b"vpag":
-				assert "13.5#reserved-bit" in record.reached
-		# Naming is checked even when the CRC subsequently disables content dispatch.
-		data = png()
-		_, record = check(data[:33] + corrupt_crc(b"vPAG", b"") + data[33:], ed, warning="5.7.2#undefined-public")
-		assert "13.1#crc-ancillary" in record.reached
-		check(png(((b"VPAG", b""),)), ed, reject="5.4#unknown-critical")
-	for name in (b"acTL", b"fcTL", b"fdAT"):
-		check(png(((name, b"not parsed in edition 2"),)), 2, clean=True)
-	for name in (b"cICP", b"mDCV", b"cLLI", b"iDOT"):
-		check(png(((name, b""),)), 2, warning="5.7.2#undefined-public")
+	for name in (b"vpAG", b"vpAg"):
+		check(png(((name, b"opaque"),)), clean=True)
+	for name, clause in ((b"vpag", "5.4#reserved-bit"), (b"vPAG", "5.7.2#undefined-public")):
+		_, record = check(png(((name, b"opaque"),)), warning=clause, pixels=(18, 52, 86, 255))
+		assert expectations(record) == both("display")
+		if name == b"vpag":
+			assert "13.5#reserved-bit" in record.reached
+	# Naming is checked even when the CRC subsequently disables content dispatch.
+	data = png()
+	_, record = check(data[:33] + corrupt_crc(b"vPAG", b"") + data[33:], warning="5.7.2#undefined-public")
+	assert "13.1#crc-ancillary" in record.reached
+	check(png(((b"VPAG", b""),)), error="5.4#unknown-critical", choices=((("critical", "ignored"),),))
+	# A chunk is known or unknown: the chunks the 3rd edition and the extensions define are known, and parsed.
+	for name in (b"acTL", b"fcTL", b"fdAT", b"cICP", b"mDCV", b"cLLI", b"iDOT", b"eXIf"):
+		_, record = check(png(((name, b""),)))
+		assert faults(record) and "5.7.2#undefined-public" not in record.reached and "5.4#unknown-ancillary" not in record.reached, name
+	# iDOT's public name is a coverage note of its extension, not a naming fault.
+	_, record = check(idot_png(), clean=True)
+	assert "idot#public-name" in record.reached
 
 
 def test_extensions():
 	bodies, cases = extension_cases()
-	for ed in (2, 3):
-		for name, body in bodies.items():
-			check(png(((name, body),), width=9, raw=b"\0" + b"\x12\x34\x56" * 9), ed, clean=True)
-		for clause, data in cases:
-			check(data, ed, warning=clause)
-		for name, clause in ((b"dSIG", "ext-5.1#dsig"), (b"fRAc", "ext-5.2#frac")):
-			_, record = check(png(((name, b"\xff\0anything"),)), ed, clean=True)
-			assert clause in record.reached
-		for name in (b"gIFg", b"gIFx", b"gIFt"):
-			check(png(((name, bodies[name]), (name, bodies[name])), after=((name, bodies[name]),)), ed, clean=True)
-		for equation, count in enumerate((2, 3, 3, 4)):
-			check(png(((b"pCAL", pcal(equation=equation, count=count, parameters=b"\0".join([b"-1"] * count))),)), ed, clean=True)
-		for name in (b"", b"a" * 80, b" leading", b"trailing ", b"two  spaces", b"control\x7f"):
-			check(png(((b"pCAL", pcal(name=name)),)), ed, warning="ext-4.2#name")
-		for width in (b"0", b"-0", b"+0.000e100", b"-1e-100000"):
-			for body in (b"\1" + width + b"\0" + b"1", b"\1" + b"1\0" + width):
-				check(png(((b"sCAL", body),)), ed, warning="ext-4.3#positive")
-		valid = (b"1", b"+1", b"1.", b".1", b"1.5", b"1e0", b"1.E+2", b".1e-99999999999999999999999")
-		invalid = (b"", b".", b"+", b"1e", b"1e+", b"1.e.2", b" 1", b"1 ", b"1\n", b"1_0", b"nan", b"inf", b"0x1", b"1f", b"\xff", b"1\0")
-		for value in valid + invalid:
-			check(png(((b"sCAL", b"\1" + b"1\0" + value),)), ed, clean=value in valid,
-				warning=None if value in valid else "ext-2.2#float")
-		check(png(((b"pCAL", pcal(x0=-2147483648, x1=2147483647)),)), ed, clean=True)
-		for position in (8, 12):
-			body = bytearray(bodies[b"gIFt"])
-			struct.pack_into(">I", body, position, 0x80000000)
-			check(png(((b"gIFt", bytes(body)),)), ed, warning="7.1#uint31")
-		_, record = check(png(((b"sCAL", b"\1bad\0-1"),)), ed)
-		assert {"ext-2.2#float", "ext-4.3#positive"} <= record.reached
-		# Independent cross-field checks survive invalid text or an unusable equation selector.
-		_, record = check(png(((b"pCAL", pcal(name=b"", x0=0, x1=0, equation=255, count=2, parameters=b"bad")),)), ed)
-		assert {"ext-4.2#name", "ext-4.2#range", "ext-4.2#equation", "ext-4.2#parameters", "ext-2.2#float"} <= record.reached
+	for name, body in bodies.items():
+		check(png(((name, body),), width=9, raw=b"\0" + b"\x12\x34\x56" * 9), clean=True)
+	for clause, data in cases:
+		check(data, warning=clause)
+	for name, clause in ((b"dSIG", "ext-5.1#dsig"), (b"fRAc", "ext-5.2#frac")):
+		_, record = check(png(((name, b"\xff\0anything"),)), clean=True)
+		assert clause in record.reached
+	for name in (b"gIFg", b"gIFx", b"gIFt"):
+		check(png(((name, bodies[name]), (name, bodies[name])), after=((name, bodies[name]),)), clean=True)
+	for equation, count in enumerate((2, 3, 3, 4)):
+		check(png(((b"pCAL", pcal(equation=equation, count=count, parameters=b"\0".join([b"-1"] * count))),)), clean=True)
+	for name in (b"", b"a" * 80, b" leading", b"trailing ", b"two  spaces", b"control\x7f"):
+		check(png(((b"pCAL", pcal(name=name)),)), warning="ext-4.2#name")
+	for width in (b"0", b"-0", b"+0.000e100", b"-1e-100000"):
+		for body in (b"\1" + width + b"\0" + b"1", b"\1" + b"1\0" + width):
+			check(png(((b"sCAL", body),)), warning="ext-4.3#positive")
+	valid = (b"1", b"+1", b"1.", b".1", b"1.5", b"1e0", b"1.E+2", b".1e-99999999999999999999999")
+	invalid = (b"", b".", b"+", b"1e", b"1e+", b"1.e.2", b" 1", b"1 ", b"1\n", b"1_0", b"nan", b"inf", b"0x1", b"1f", b"\xff", b"1\0")
+	for value in valid + invalid:
+		check(png(((b"sCAL", b"\1" + b"1\0" + value),)), clean=value in valid,
+			warning=None if value in valid else "ext-2.2#float")
+	check(png(((b"pCAL", pcal(x0=-2147483648, x1=2147483647)),)), clean=True)
+	for position in (8, 12):
+		body = bytearray(bodies[b"gIFt"])
+		struct.pack_into(">I", body, position, 0x80000000)
+		check(png(((b"gIFt", bytes(body)),)), warning="7.1#uint31")
+	_, record = check(png(((b"sCAL", b"\1bad\0-1"),)))
+	assert {"ext-2.2#float", "ext-4.3#positive"} <= record.reached
+	# Independent cross-field checks survive invalid text or an unusable equation selector.
+	_, record = check(png(((b"pCAL", pcal(name=b"", x0=0, x1=0, equation=255, count=2, parameters=b"bad")),)))
+	assert {"ext-4.2#name", "ext-4.2#range", "ext-4.2#equation", "ext-4.2#parameters", "ext-2.2#float"} <= record.reached
 
 
-def test_exif_editions():
+def test_exif():
 	profile = tiff(entries=((0x0100, 4, 1, 1),))
-	for ed in (2, 3):
-		check(png(((b"eXIf", profile),)), ed, clean=True)
-		check(png(((b"eXIf", b"invalid"),)), ed, warning="11.3.4.5#header")
-		check(png(((b"eXIf", profile), (b"eXIf", profile))), ed, warning="5.6#single-ancillary")
-	check(png(after=((b"eXIf", profile),)), 2, clean=True)
-	check(png(after=((b"eXIf", profile),)), 3, warning="5.6#before-idat")
-	check(png(after=((b"eXIf", b"invalid"),)), 2, warning="11.3.4.5#header")
+	check(png(((b"eXIf", profile),)), clean=True)
+	check(png(((b"eXIf", b"invalid"),)), warning="11.3.4.5#header")
+	check(png(((b"eXIf", profile), (b"eXIf", profile))), warning="5.6#single-ancillary")
+	# 5.6 Table 7: eXIf "Before IDAT"; a misplaced chunk is ignored without its content being parsed.
+	_, record = check(png(after=((b"eXIf", b"invalid"),)), warning="5.6#before-idat")
+	assert "11.3.4.5#header" not in record.reached
 
 
 def idot_png(*, entries=None, parts=None, body=None, interlace=0, after=False, duplicate=False, bad_crc=False):
@@ -1082,20 +1085,30 @@ def idot_cases():
 	return cases
 
 
+def without(data, name):
+	"""The datastream with every chunk of type `name` removed."""
+	pos, out = 8, bytearray(data[:8])
+	while pos < len(data):
+		end = pos + 12 + int.from_bytes(data[pos:pos + 4], "big")
+		if data[pos + 4:pos + 8] != name:
+			out += data[pos:end]
+		pos = end
+	return bytes(out)
+
+
 def test_idot():
-	import expect
 	check(idot_png(), clean=True, pixels=(18, 52, 86, 255) * 2)
 	# The length guard rejects large counts before allocating or iterating over entries.
 	check(idot_png(body=struct.pack(">I", 0xffffffff)), warning="idot#layout")
 	for clause, data in idot_cases():
 		new, record = check(data, warning=clause)
-		old, _ = check(data, 2, warning="5.7.2#undefined-public")
+		old, _ = check(without(data, b"iDOT"))
 		assert tuple(new.samples) == tuple(old.samples), clause
 		assert all(CONSEQUENCES[id] == "unaffected" for id, _ in record.warnings), record.warnings
-		assert outcomes_after_unaffected({"stdout": stdout(record), "verdict": "accept", "detail": ""}) == "pixels=pass"
+		assert expectations(record) == both("display")
 	# A bad iDOT CRC is an ordinary ancillary CRC error: decoders may reject or drop the chunk.
 	_, record = check(idot_png(bad_crc=True), warning="13.1#crc-ancillary")
-	assert expect.outcomes({"stdout": stdout(record), "verdict": "accept", "detail": ""}, CONSEQUENCES) == "pixels=pass,reject=pass"
+	assert expectations(record) == both("may-reject")
 	# A segment-start Sub filter is independent, even when later rows would use previous-row filters.
 	raw = b"\0\x12\x34\x56" + b"\1\x12\x34\x56"
 	parts = (b"\x78\x01\0\4\0\xfb\xff" + raw[:4], b"\1\4\0\xfb\xff" + raw[4:] + struct.pack(">I", zlib.adler32(raw)))
@@ -1108,10 +1121,96 @@ def test_idot():
 	for path in sorted((ROOT / "decode").glob("y_chunk-idot*.png")):
 		data = path.read_bytes()
 		new, record = check(data)
-		old, _ = check(data, 2, warning="5.7.2#undefined-public")
+		old, _ = check(without(data, b"iDOT"), clean=True)
 		assert tuple(new.samples) == tuple(old.samples)
 		bad = path.stem.endswith(("-stale", "-short", "-empty"))
 		assert bool(record.warnings) == bad, (path, record.warnings)
+
+
+def test_interpretations():
+	"""Every reading the specification leaves open comes from one parse, each under its choices."""
+	grey = dict(raw=b"\0\x12", colour=0)
+	header = 33  # signature and IHDR chunk
+	# Several tRNS chunks: the specification asks for recovery and names none to keep.
+	data = png(((b"tRNS", b"\0\x12"), (b"tRNS", b"\0\x34")), **grey)
+	check(data, warning="5.6#single-ancillary", choices=((("trns", "first"),), (("trns", "last"),)))
+	assert interpretations(data) == {(("trns", "first"),): (18, 18, 18, 0), (("trns", "last"),): (18, 18, 18, 255)}
+	# A tRNS chunk with a bad CRC is dropped (13.1 recommends it) or used as stored.
+	data = png(**grey)
+	data = data[:header] + corrupt_crc(b"tRNS", b"\0\x12") + data[header:]
+	check(data, warning="13.1#crc-ancillary", choices=((("crc", "dropped"),), (("crc", "ignored"),)))
+	assert interpretations(data) == {(("crc", "dropped"),): (18, 18, 18, 255), (("crc", "ignored"),): (18, 18, 18, 0)}
+	# Decisions nest rather than multiply: a dropped chunk leaves one tRNS, so no trns choice; nor is it a duplicate.
+	data = png(((b"tRNS", b"\0\x34"),), **grey)
+	data = data[:header] + corrupt_crc(b"tRNS", b"\0\x12") + data[header:]
+	_, record = check(data, choices=((("crc", "dropped"),), (("crc", "ignored"), ("trns", "first")), (("crc", "ignored"), ("trns", "last"))))
+	assert "5.6#single-ancillary" not in record.reached
+	assert interpretations(data) == {(("crc", "dropped"),): (18, 18, 18, 255), (("crc", "ignored"), ("trns", "first")): (18, 18, 18, 0),
+		(("crc", "ignored"), ("trns", "last")): (18, 18, 18, 255)}
+	# A tRNS occurrence that is ignored gives no transparency: the first is misplaced here, the last is used.
+	data = png(((b"PLTE", b"\x12\x34\x56"), (b"tRNS", b"\0")), raw=b"\0\0", colour=3)
+	data = data[:header] + chunk(b"tRNS", b"\0") + data[header:]
+	check(data, warning="5.6#after-plte", choices=((("trns", "first"),), (("trns", "last"),)), pixels=(18, 52, 86, 255))
+	assert interpretations(data)[(("trns", "last"),)] == (18, 52, 86, 0)
+	# Two palettes in an indexed-colour image; the out-of-range check follows the palette looked up.
+	data = png(((b"PLTE", b"\1\2\3"), (b"PLTE", b"\4\5\6\7\x08\x09")), raw=b"\0\1", colour=3)
+	check(data, warning="11.2.2#single", error="11.2.2#index-in-range", choices=((("plte", "first"),), (("plte", "last"),)))
+	assert interpretations(data) == {(("plte", "first"),): (0, 0, 0, 255), (("plte", "last"),): (7, 8, 9, 255)}
+	# A palette after IDAT is not one a decoder can keep.
+	check(png(((b"PLTE", b"\x12\x34\x56"),), raw=b"\0\0", colour=3, after=((b"PLTE", b"\0\0\0"),)),
+		warning="11.2.2#single", pixels=(18, 52, 86, 255))
+	# An unknown critical chunk after IDAT: decoded as if it were absent.
+	check(png(after=((b"CRIT", b"x"),)), error="5.4#unknown-critical", choices=((("critical", "ignored"),),), pixels=(18, 52, 86, 255))
+	# A chunk before IHDR takes no part in decoding; an unknown critical one opens the critical choice.
+	check(refpng.SIGNATURE + chunk(b"tEXt", b"key\0text") + png()[8:], error="11.2#ihdr-first", pixels=(18, 52, 86, 255))
+	check(refpng.SIGNATURE + chunk(b"CgBI", b"\0\0\0\0") + png()[8:], error="11.2#ihdr-first",
+		choices=((("critical", "ignored"),),), pixels=(18, 52, 86, 255))
+	# A second IHDR is ignored, whatever it says.
+	data = png()
+	check(data[:header] + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 1, 8, 0, 0, 0, 0)) + data[header:], error="11.2#one-ihdr",
+		pixels=(18, 52, 86, 255))
+	# IHDR, IDAT and the first indexed PLTE cannot be dropped: a bad CRC leaves only crc:ignored.
+	for position in (header - 1, -13):
+		data = bytearray(png())
+		data[position] ^= 1
+		check(bytes(data), warning="13.1#crc-critical", choices=((("crc", "ignored"),),), pixels=(18, 52, 86, 255))
+	data = png(((b"PLTE", b"\x12\x34\x56"),), raw=b"\0\0", colour=3)
+	data = data[:header] + corrupt_crc(b"PLTE", b"\x12\x34\x56") + data[header + 15:]
+	check(data, warning="13.1#crc-critical", choices=((("crc", "ignored"),),), pixels=(18, 52, 86, 255))
+	# A wrong Adler-32 is recorded at its clause's level, and the complete data are decoded.
+	valid = zlib.compress(b"\0\x12\x34\x56")
+	_, record = check(png(stream=valid[:-1] + bytes((valid[-1] ^ 1,))), error="rfc1950-2.3#adler32", pixels=(18, 52, 86, 255))
+	assert "10.1#deflate-valid" in record.reached
+	assert expectations(record) == both("must-reject")
+	# A palette index past PLTE is opaque black; both texts' clauses are recorded.
+	_, record = check(png(((b"PLTE", b"\x12\x34\x56"),), raw=b"\0\x01", colour=3),
+		error="11.2.2#index-in-range", warning="13.1#index-opaque-black", pixels=(0, 0, 0, 255))
+	# The one contradiction between the texts: an error under the 2nd edition, recovery under the 3rd.
+	assert expectations(record) == {"2": "must-reject", "3": "recover"}
+	# Truncation: inside the image data no pixels can exist; inside the last CRC the image is complete.
+	data = png()
+	_, record = check(data[:header + 8 + 3], warning="13.1#end-of-stream", no_image="13.1#data-short")
+	assert "10.1#zlib-check" in {id for id, _ in record.warnings}
+	check(data[:-12 - 2], warning="13.1#end-of-stream", pixels=(18, 52, 86, 255))
+	check(data[:-6], warning="13.1#end-of-stream", pixels=(18, 52, 86, 255))
+	# The CLI writes the first interpretation and names every interpretation with its digest, in order.
+	data = png(((b"tRNS", b"\0\x12"), (b"tRNS", b"\0\x34")), **grey)
+	with tempfile.TemporaryDirectory() as td:
+		src, dest = Path(td) / "in.png", Path(td) / "out.pam"
+		src.write_bytes(data)
+		out = io.StringIO()
+		with redirect_stdout(out):
+			assert refpng.main([str(src), str(dest)]) == 0
+		decoded = refpng.decode(data)
+		lines = [l for l in out.getvalue().splitlines() if l.startswith("INFO interpretation=")]
+		assert lines == [f"INFO interpretation={c} digest={refpng.digest(i.image)}"
+			for c, i in zip(("trns:first", "trns:last"), decoded.interpretations)], lines
+		assert dest.read_bytes() == refpng.to_pam(decoded.interpretations[0].image)
+		src.write_bytes(png())
+		out = io.StringIO()
+		with redirect_stdout(out):
+			assert refpng.main([str(src), str(dest)]) == 0
+		assert "INFO interpretation=none digest=" in out.getvalue()
 
 
 def test_conformance_mutations():

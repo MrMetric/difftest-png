@@ -8,21 +8,21 @@
 # lineage   the code base a column's PNG decoding comes from
 # memcheck  run under valgrind memcheck in the memory pass (native code only)
 
-[reference-ed3]
+[reference-2]
 project = "reference"
-variant = "3rd edition"
+variant = "lens 2"
 lineage = "this project"
-notes = "refpng.py: this project's reference decoder, every check named by its clause; third edition."
-cmd = ["{python}", "refpng.py", "--edition", "3", "{input}", "{output}"]
+notes = "pnglens.py --lens 2: this project's reference decoder read through lens 2; rejects what the lens says to reject, else writes the preferred interpretation."
+cmd = ["{python}", "pnglens.py", "--lens", "2", "{input}", "{output}"]
 version = ["{python}", "refpng.py", "--version"]
 timeout_s = 120
 
-[reference-ed2]
+[reference-3]
 project = "reference"
-variant = "2nd edition"
+variant = "lens 3"
 lineage = "this project"
-notes = "refpng.py: this project's reference decoder; second edition (ISO/IEC 15948:2003)."
-cmd = ["{python}", "refpng.py", "--edition", "2", "{input}", "{output}"]
+notes = "pnglens.py --lens 3: this project's reference decoder read through lens 3; rejects what the lens says to reject, else writes the preferred interpretation."
+cmd = ["{python}", "pnglens.py", "--lens", "3", "{input}", "{output}"]
 version = ["{python}", "refpng.py", "--version"]
 timeout_s = 120
 

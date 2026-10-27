@@ -153,9 +153,11 @@ def message(stdout: str, stderr: str, code: int | None) -> str:
 
 
 def first_warning(stdout: str, stderr: str) -> str | None:
+	"""The first diagnostic: a WARN or ERR line of stdout (an ERR line on a successful exit is a diagnostic
+	too), else the first line of stderr."""
 	for line in stdout.splitlines():
-		if line.startswith("WARN "):
-			return line[5:].strip()
+		if line.startswith(("WARN ", "ERR ")):
+			return line.split(" ", 1)[1].strip()
 	for line in stderr.splitlines():
 		if line.strip():
 			return line.strip()

@@ -34,12 +34,14 @@ FIXED_DIST = (5,) * 32
 
 
 class InflateError(Exception):
-	"""The stream breaks the rule `id`; `output` holds the bytes decoded before the fault."""
+	"""The stream breaks the rule `id`; `output` holds the bytes decoded before the fault, and `end` the
+	position after the stream when the fault is in a trailer that was read completely."""
 
-	def __init__(self, id: str, msg: str, output: bytes | bytearray = b""):
+	def __init__(self, id: str, msg: str, output: bytes | bytearray = b"", end: int | None = None):
 		super().__init__(msg)
 		self.id = id
 		self.output = bytes(output)
+		self.end = end
 
 
 class Truncated(InflateError):
@@ -119,7 +121,7 @@ def _zlib_decompress(data: bytes, report: StreamDiagnostics, observer=None) -> t
 		raise Truncated("rfc1950-2.2#end-in-adler32", f"Adler-32 missing ({len(data) - end} of 4 bytes present)", out)
 	stored = int.from_bytes(data[end:end + 4], "big")
 	if stored != adler32(out):
-		raise InflateError("rfc1950-2.3#adler32", f"Adler-32 {stored:08x}, data gives {adler32(out):08x}", out)
+		raise InflateError("rfc1950-2.3#adler32", f"Adler-32 {stored:08x}, data gives {adler32(out):08x}", out, end + 4)
 	return out, end + 4
 
 

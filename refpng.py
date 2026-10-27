@@ -1,65 +1,102 @@
-"""Reference PNG decoder for the conformance suite: PNG 2nd edition (W3C REC-PNG-20031110 =
-ISO/IEC 15948:2003) and W3C PNG 3rd edition (2025).
+"""Reference PNG decoder for the conformance suite, written from PNG 2nd edition (W3C REC-PNG-20031110 =
+ISO/IEC 15948:2003), W3C PNG 3rd edition (2025) and the extensions both rely on.
 
-	python refpng.py [--edition 2|3] in.png out.pam
+	python refpng.py in.png out.pam
 	python refpng.py --version
 
-decode(data, edition=3) returns an Image or raises Reject. Image.samples is a flat, row-major
-array of RGBA samples: array('B') when maxval is 255 (bit depth 8 or less), array('H') when it
-is 65535. Palette expanded, tRNS applied (alpha 0 at matching pixels, else maxval), sub-byte
-greyscale scaled exactly to 8 bits; nothing else (no gamma, background or sBIT).
+decode(data) returns a Decoded: every interpretation of the file's pixels that the specification or
+its recovery advice defines, and the Diagnostics record of every fault and every clause reached. It
+raises NoImage only when no pixels can exist. What the bytes are does not depend on an edition: each
+check records a clause, and spec/clauses.tsv says which edition or extension the clause belongs to
+(pnglens.py applies them). A chunk is known (defined by either edition or a known extension) or
+unknown.
+
+An Interpretation is an Image and the tuple of choices that produced it. A choice is (topic, option):
+	("trns", "first" | "last")      more than one tRNS chunk: the first or the last is used
+	("plte", "first" | "last")      more than one PLTE chunk in an indexed-colour image: likewise
+	("crc", "dropped" | "ignored")  a pixel-affecting chunk with a bad CRC is not used / used as stored
+	("critical", "ignored")         an unknown critical chunk; the rest is decoded as if it were absent
+A file with no open decision has one interpretation with no choices. Interpretations are sorted by
+their choices (no choices first). Readings are enumerated as such: two readings that happen to give
+the same pixels are still two interpretations.
+
+Image.samples is a flat, row-major array of RGBA samples: array('B') when maxval is 255 (bit depth 8
+or less), array('H') when it is 65535. Palette expanded, tRNS applied (alpha 0 at matching pixels,
+else maxval), sub-byte greyscale scaled exactly to 8 bits; nothing else (no gamma, background or sBIT).
 
 Each check names a clause of spec/clauses.tsv and quotes the sentence it enforces:
-	d.require(ok, id, msg)   the datastream is rejected (Reject)
-	d.expect(ok, id, msg)    the fault is recovered from, with a warning (Image.warnings)
+	d.require(ok, id, msg)   no pixels can exist: recorded as ERR, then NoImage
+	d.expect(ok, id, msg)    recorded, and decoding continues: as ERR when the clause's consequence
+				             is reject, otherwise as WARN
 	d.reach(id)              a consequence=none rule the datastream exercised
-All three write one Diagnostics record. Reached clauses and warnings are read-only projections.
+So ERR marks a fault on which the clause says a decoder rejects, or one that ended decoding; WARN
+marks every other fault. All three write one Diagnostics record. Reached clauses and warnings are
+read-only projections.
 Known chunk layouts are declared once in CHUNKS; the generic parser validates their typed fields.
-Handlers receive Values, never raw chunk bodies.
-Section numbers are the 3rd edition's. Checks whose required behaviour differs between the
-editions branch on d.edition and quote both texts; chunks the 3rd edition adds (cICP, mDCV,
-cLLI, acTL, fcTL, fdAT) are unknown ancillary chunks under edition 2. Registered extensions,
-including eXIf (2017), are recognized in both editions; iDOT is recognized only in edition 3.
+Handlers receive Values, never raw chunk bodies. Section numbers are the 3rd edition's.
 
 Policies where the specification leaves the decoder a choice (13.1: "The PNG decoder has to
 determine whether a syntax error is fatal (unrecoverable) or not"):
-- CRC mismatch: fatal on a critical chunk, except that PLTE in a truecolour image and IEND are
-  treated like ancillary chunks (13.1 says both can be ignored when invalid); an ancillary chunk
-  with a bad CRC is dropped with a warning. A dropped chunk's content is not used, but it still
-  occupies its place in the chunk sequence (it ends a run of IDAT chunks; it can precede IHDR).
+- Nothing is rejected as a matter of policy. Decoding stops only where no pixels can exist: a wrong
+  signature, no IHDR or an invalid one, an indexed-colour image without a valid PLTE before its image
+  data, no IDAT before IEND or the end of the datastream, a zlib header that declares an undefined
+  method, window or dictionary or fails its check, image data that does not inflate to the last row,
+  and an undefined filter type.
+- CRC mismatch (13.1): IHDR, IDAT and the first PLTE of an indexed-colour image are used as stored
+  (crc:ignored), since without them there is no image; tRNS and any later PLTE of an indexed-colour
+  image are read both ways (crc:dropped, crc:ignored); every other chunk with a bad CRC is dropped,
+  since no other chunk changes pixels (13.1 names an invalid IEND and a truecolour PLTE as chunks a
+  decoder can ignore). A dropped chunk's content is not used, but it still occupies its place in the
+  chunk sequence (it ends a run of IDAT chunks; it can precede IHDR) and its name is checked; it is
+  not an occurrence for the duplicate checks.
+- A chunk before IHDR takes no part in decoding beyond its name; a second IHDR is ignored. An unknown
+  critical chunk is ignored (critical:ignored). IDAT chunks that are not consecutive still form one
+  zlib datastream (10.2: the IDAT data fields concatenated). A chunk length above 2^31-1 is read as
+  unsigned (5.3), and a chunk type that is not four letters marks a chunk that is not used.
 - Ancillary chunks: a malformed, misplaced or duplicate chunk is ignored with a warning (13.2
-  recommends ignoring unexpected values in ancillary chunks). The second occurrence of a chunk
-  that may occur once is a duplicate even if the first was ignored as malformed or misplaced.
-- Critical chunks out of place, unknown critical chunks, and invalid image data are fatal.
-- Image data: too little is fatal; too much, bytes after the zlib stream, and a zlib stream that
-  stops or becomes invalid after the image is complete are warnings. A wrong
-  Adler-32 is fatal (RFC 1950 2.3).
-- A truncated chunk is fatal; a datastream that ends cleanly after IDAT without IEND, and bytes
-  after IEND, are warnings.
-- Palette index beyond PLTE, the one place the editions contradict each other: edition 3 renders
-  opaque black with a warning (13.1); edition 2 calls it an error, which its 13.3 says shall be
-  treated as one and recommends be fatal in a critical chunk, so the reference rejects.
-- tRNS / bKGD sample bits above the bit depth are masked off in both editions: the 2nd edition's
-  "the least significant bits are used" is the instruction the 3rd edition spells out as "decoders
-  must mask the other bits to 0".
+  recommends ignoring unexpected values in ancillary chunks). The second occurrence of a chunk that
+  may occur once is a duplicate even if the first was ignored as malformed or misplaced. Duplicate
+  tRNS chunks, and duplicate PLTE chunks before IDAT in an indexed-colour image, open the first/last
+  choice instead of being ignored; a tRNS occurrence that is ignored gives no transparency. Checks
+  that depend on the palette (tRNS length, bKGD index, hIST) use the first PLTE; the plte choice
+  changes the colours looked up and which indices are out of range.
+- Image data: too little ends decoding; too much, bytes after the zlib stream, and a zlib stream that
+  stops or becomes invalid after the image is complete are warnings. A wrong Adler-32 is recorded
+  (RFC 1950 2.3) and the image decoded.
+- A chunk cut short by the end of the datastream is recorded and not used, except that the image data
+  a cut IDAT chunk holds is part of the zlib datastream; the chunks before it are decoded. A
+  datastream that ends without IEND, and bytes after IEND, are warnings.
+- Palette index beyond PLTE, the one place the editions contradict each other: the pixel is opaque
+  black (3rd ed. 13.1 "is now required by this specification"). Both texts' clauses are recorded:
+  11.2.2#index-in-range (2nd ed. "an error", which its 13.3 recommends be fatal in a critical chunk)
+  and 13.1#index-opaque-black.
+- tRNS / bKGD sample bits above the bit depth are masked off: the 2nd edition's "the least
+  significant bits are used" is the instruction the 3rd edition spells out as "decoders must mask
+  the other bits to 0".
 - APNG chunks are checked for structure only; every fault is a warning and the static image is
-  decoded (13.1: "A decoder which detects an error before the animation has started should
-  display the static image").
+  decoded (13.1: "A decoder which detects an error before the animation has started should display
+  the static image").
+- iDOT is an extension whose definition takes precedence over the public-name convention its
+  uppercase second letter collides with: the name is recorded as the coverage note idot#public-name,
+  not as an undefined public chunk.
+- An iTXt language tag is checked against both texts' grammars: BCP 47 (11.3.3.4#language) and
+  RFC 3066 (11.3.3.4#language-rfc3066).
 """
 import struct
 import sys
 import zlib
 from array import array
-from itertools import accumulate
+from itertools import accumulate, product
 from dataclasses import dataclass
 
-from pngdiagnostics import Diagnostics, StreamDiagnostics
+from pngdiagnostics import CONSEQUENCES, Diagnostics, StreamDiagnostics
 from pngfields import (Parser, Values, Ignored, Layout, Struct, UInt, BYTE, UINT16, UINT31, enum,
 	Repeat, Choice, Text, Compressed, Content, Fragment, RemainderLength, Sample, SInt32, AppleUInt32, Rule, TextList, positive_float)
 
 import inflate
+import pam
 
-VERSION = "refpng 1.0 (PNG 2nd and 3rd edition reference decoder, own inflate)"
+VERSION = "refpng 2.0 (PNG reference decoder: every interpretation, own inflate)"
 SIGNATURE = b"\x89PNG\r\n\x1a\n"
 CHANNELS = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
 CT_NAME = {0: "g", 2: "rgb", 3: "p", 4: "ga", 6: "rgba"}
@@ -75,7 +112,6 @@ SINGLE = {b"IHDR", b"PLTE", b"IEND", b"cHRM", b"gAMA", b"iCCP", b"sBIT", b"sRGB"
 SRGB_CHRM = (31270, 32900, 64000, 33000, 30000, 60000, 15000, 6000)
 # Registered names whose content formats are outside this reference's scope.
 REGISTERED_OPAQUE = {b"dSIG": "ext-5.1#dsig", b"fRAc": "ext-5.2#frac"}
-EDITION3_CHUNKS = {b"cICP", b"mDCV", b"cLLI", b"acTL", b"fcTL", b"fdAT", b"iDOT"}
 
 # The same ordering tables carry extension clauses and decoder consequences.
 # Extension 1.6.1 section 3: "Multiple OK? No", "Before IDAT" for oFFs, pCAL, sCAL and sTER.
@@ -89,49 +125,56 @@ SINGLE[b"iDOT"] = "idot#single"
 BEFORE_IDAT[b"iDOT"] = "idot#before-idat"
 
 
-class Reject(Exception):
-	"""A fatal diagnostic already committed to the decode's record."""
+class NoImage(Exception):
+	"""No pixels can exist; the diagnostic that says why is already committed to the decode's record."""
 	def __init__(self, id: str, msg: str, diagnostics: Diagnostics):
 		super().__init__(msg)
 		assert any(e.id == id and e.level == "ERR" for e in diagnostics.events), "unrecorded rejection"
 		self.id, self.diagnostics = id, diagnostics
 
-	@property
-	def reached(self):
-		return self.diagnostics.reached
 
-	@property
-	def warnings(self):
-		return self.diagnostics.warnings
-
-
+@dataclass(frozen=True)
 class Image:
-	def __init__(self, width: int, height: int, maxval: int, samples: array, diagnostics: Diagnostics):
-		self.width, self.height, self.maxval, self.samples = width, height, maxval, samples
-		self.diagnostics = diagnostics
+	width: int
+	height: int
+	maxval: int
+	samples: array
 
-	@property
-	def reached(self):
-		return self.diagnostics.reached
 
-	@property
-	def warnings(self):
-		return self.diagnostics.warnings
+@dataclass(frozen=True)
+class Interpretation:
+	choices: tuple[tuple[str, str], ...]
+	image: Image
+
+
+@dataclass(frozen=True)
+class Decoded:
+	interpretations: list[Interpretation]
+	diagnostics: Diagnostics
+
+
+@dataclass
+class _Occurrence:
+	"""One tRNS chunk, or one usable PLTE chunk of an indexed-colour image, as a reading can use it."""
+	crc_ok: bool
+	value: object = None  # None for a tRNS chunk that is ignored
 
 
 class _State:
 	"""Semantic image state; every observation belongs to its Diagnostics record."""
 
-	def __init__(self, edition: int, diagnostics: Diagnostics):
-		self.edition = edition
+	def __init__(self, diagnostics: Diagnostics):
 		self.diagnostics = diagnostics
 		self.width = self.height = self.depth = self.ctype = self.interlace = 0
-		self.plte: list[tuple[int, ...]] | None = None
-		self.trns: tuple[int, ...] | None = None  # alpha table (type 3) or key sample values (types 0, 2)
+		self.palettes: list[_Occurrence] = []  # indexed-colour PLTE chunks the plte choice ranges over
+		self.plte: list[tuple[int, ...]] | None = None  # the first PLTE, which palette-dependent checks use
+		self.trns: list[_Occurrence] = []  # alpha table (type 3) or key sample values (types 0, 2)
+		self.forced: set[tuple[str, str]] = set()  # choices with a single option, carried by every interpretation
+		self.crc_ok = True  # of the chunk being dispatched
 		self.hist: tuple[int, ...] | None = None
-		self.seen: set[bytes] = set()  # known chunk types met so far with a good CRC, placed correctly or not
+		self.seen: set[bytes] = set()  # known chunk types met so far and used, placed correctly or not
 		self.chunk_count = 0
-		self.idat_run = 0  # 0 before IDAT, 1 within the IDAT run, 2 after it
+		self.idat_run = 0  # 0 before IDAT, 1 within a run of IDAT chunks, 2 after it
 		self.idat = bytearray()
 		self.idat_sizes: list[int] = []
 		self.chunk_offset = 0
@@ -151,20 +194,19 @@ class _State:
 	def require(self, ok: bool, id: str, msg: str) -> None:
 		if not ok:
 			self.diagnostics.record(id, "ERR", msg)
-			raise Reject(id, msg, self.diagnostics)
+			raise NoImage(id, msg, self.diagnostics)
 
 	def expect(self, ok: bool, id: str, msg: str) -> bool:
 		if not ok:
-			self.diagnostics.record(id, "WARN", msg)
+			self.diagnostics.record(id, "ERR" if CONSEQUENCES[id] == "reject" else "WARN", msg)
 		return ok
 
 
-def decode(data: bytes, edition: int = 3, *, diagnostics: Diagnostics | None = None) -> Image:
+def decode(data: bytes, *, diagnostics: Diagnostics | None = None) -> Decoded:
 	"""Decode a PNG. The caller may own the record, including across unexpected exceptions."""
-	assert edition in (2, 3), edition
 	record = diagnostics if diagnostics is not None else Diagnostics()
 	assert not record.events, "each decode needs a fresh diagnostic record"
-	d = _State(edition, record)
+	d = _State(record)
 	try:
 		_signature(d, data)
 		for ctype, body, crc_ok, placed in _chunks(d, data):
@@ -172,14 +214,29 @@ def decode(data: bytes, edition: int = 3, *, diagnostics: Diagnostics | None = N
 		_datastream_end(d)
 		raw, incomplete = _decompress(d)
 		rows = _scanlines(d, raw, incomplete)
-		_index_range(d, rows)
 		_hist_usage(d, rows)
-		assert all(e.level != "ERR" for e in record.events), "fatal diagnostic cannot return an image"
-		return _output(d, rows)
+		interpretations = sorted((Interpretation(choices, _output(d, rows, palette, trns))
+			for choices, palette, trns in _readings(d)), key=lambda i: i.choices)
+		assert interpretations and len({i.choices for i in interpretations}) == len(interpretations) <= 8, interpretations
+		return Decoded(interpretations, record)
 	except Exception as e:
 		# Keep the accumulated record accessible even for programming errors and MemoryError.
 		e.diagnostics = record
 		raise
+
+
+def _readings(d: _State):
+	"""(choices, palette, tRNS value) of every reading the specification leaves open, from one parse."""
+	damaged = any(not o.crc_ok for o in d.palettes + d.trns)
+	for crc in ("dropped", "ignored") if damaged else (None,):
+		def picks(topic, occurrences):
+			kept = [o.value for o in occurrences if o.crc_ok or crc == "ignored"]
+			if len(kept) > 1:
+				return (((topic, "first"),), kept[0]), (((topic, "last"),), kept[-1])
+			return (((), kept[0] if kept else None),)
+		for (plte_choice, palette), (trns_choice, trns) in product(picks("plte", d.palettes), picks("trns", d.trns)):
+			choices = d.forced | set(plte_choice + trns_choice) | ({("crc", crc)} if crc else set())
+			yield tuple(sorted(choices)), palette, trns
 
 
 # ---------------------------------------------------------------- 5 Datastream structure
@@ -190,6 +247,10 @@ def _signature(d: _State, data: bytes) -> None:
 	d.require(data[:8] == SIGNATURE, "5.2#signature", f"signature {data[:8].hex()}")
 
 
+def _name(ctype: bytes) -> str:
+	return ctype.decode() if ctype.isalpha() else repr(ctype)
+
+
 def _chunks(d: _State, data: bytes):
 	"""5.3 Chunk layout: Length, Chunk Type, Chunk Data, CRC. Yields (type, data, CRC correct, structurally usable)."""
 	pos = 8
@@ -198,19 +259,27 @@ def _chunks(d: _State, data: bytes):
 			# 15.3.1 "No chunks or other content follow the IEND chunk." 13.3 "there could be data after the
 			# IEND chunk": the reference ignores it.
 			d.expect(False, "11.2#iend-last", f"{len(data) - pos} bytes after IEND ignored")
-			return
+			break
 		# 13.1 "an unexpected end-of-stream indicates a corrupted datastream, and may be regarded as a fatal error."
-		d.require(pos + 8 <= len(data), "13.1#end-of-stream", f"datastream ends inside a chunk header at byte {pos}")
+		# The reference decodes the chunks before it.
+		if not d.expect(pos + 8 <= len(data), "13.1#end-of-stream", f"datastream ends inside a chunk header at byte {pos}"):
+			break
 		length = int.from_bytes(data[pos:pos + 4], "big")
 		ctype = data[pos + 4:pos + 8]
 		# 5.3 "Although encoders and decoders should treat the length as unsigned, its value shall not exceed 2^31-1 bytes."
-		d.require(length <= 0x7FFFFFFF, "5.3#length-limit", f"chunk length {length} exceeds 2^31-1")
+		d.expect(length <= 0x7FFFFFFF, "5.3#length-limit", f"chunk length {length} exceeds 2^31-1")
 		d.chunk_offset = pos
 		placed = _structure(d, ctype, length)
 		# 5.3 "chunk types are restricted to consist of bytes with values in the ranges 41-5A and 61-7A";
-		# 13.2 "The chunk type can be checked for plausibility": the reference treats a failure as corruption.
-		d.require(all(65 <= c <= 90 or 97 <= c <= 122 for c in ctype), "5.3#type-letters", f"chunk type {ctype!r} is not four letters")
-		d.require(pos + 12 + length <= len(data), "13.1#end-of-stream", f"{ctype.decode()} chunk of {length} bytes runs past the end of the datastream")
+		# 13.2 "The chunk type can be checked for plausibility". No known chunk has such a type, so it is not used.
+		d.expect(all(65 <= c <= 90 or 97 <= c <= 122 for c in ctype), "5.3#type-letters", f"chunk type {ctype!r} is not four letters")
+		if not d.expect(pos + 12 + length <= len(data), "13.1#end-of-stream",
+				f"{_name(ctype)} chunk of {length} bytes runs past the end of the datastream"):
+			# A cut chunk has no CRC and its content is not used, except that the image data present is part of the
+			# zlib datastream.
+			if ctype == b"IDAT":
+				yield ctype, data[pos + 8:pos + 8 + length], True, placed
+			break
 		body = data[pos + 8:pos + 8 + length]
 		stored = int.from_bytes(data[pos + 8 + length:pos + 12 + length], "big")
 		pos += 12 + length
@@ -218,80 +287,94 @@ def _chunks(d: _State, data: bytes):
 		if length == 0 and ctype != b"IEND":
 			d.reach("5.3#zero-length")
 		yield ctype, body, _crc(d, ctype, body, stored), placed
+	# 11.2 "A valid PNG datastream shall begin with a PNG signature, immediately followed by an IHDR chunk, then one
+	# or more IDAT chunks, and shall end with an IEND chunk."
+	d.require(b"IHDR" in d.seen, "11.2#ihdr-first", "the datastream has no IHDR chunk")
 	if not d.iend:
-		# 11.2 "A valid PNG datastream shall ... end with an IEND chunk."
 		d.require(d.idat_run > 0, "11.2#idat-present", "datastream ends before any IDAT chunk")
 		d.expect(False, "11.2#iend-present", "datastream ends without an IEND chunk")
 
 
 def _crc(d: _State, ctype: bytes, body: bytes, stored: int) -> bool:
-	"""5.5 CRC algorithm; 13.1 error handling. Returns whether the chunk's content is used."""
+	"""5.5 CRC algorithm; 13.1 error handling. Returns whether the CRC is correct; _chunk applies the policy."""
 	# 5.3 CRC "calculated on the preceding bytes in the chunk, including the chunk type field and chunk data
 	# fields, but not including the length field"
 	if zlib.crc32(ctype + body) == stored:
 		return True
-	critical = not ctype[0] & 0x20
 	# 13.1 "A PNG signature mismatch, a CRC mismatch, or an unexpected end-of-stream indicates a corrupted
-	# datastream, and may be regarded as a fatal error." 13.1 "most decoders can ignore an invalid IEND chunk;
-	# ... it can ignore an invalid PLTE chunk in a truecolor image".
-	if critical:
-		ignorable = ctype == b"IEND" or (ctype == b"PLTE" and d.ctype in (2, 6))
-		d.require(ignorable, "13.1#crc-critical", f"CRC mismatch on critical chunk {ctype.decode()}")
-		d.expect(False, "13.1#crc-critical", f"CRC mismatch on {ctype.decode()}" + ("; chunk dropped" if ctype == b"PLTE" else ""))
-		return ctype == b"IEND"
-	d.expect(False, "13.1#crc-ancillary", f"CRC mismatch on ancillary chunk {ctype.decode()}; chunk dropped")
+	# datastream, and may be regarded as a fatal error."
+	critical = not ctype[0] & 0x20
+	d.expect(False, "13.1#crc-critical" if critical else "13.1#crc-ancillary",
+		f"CRC mismatch on {'critical' if critical else 'ancillary'} chunk {_name(ctype)}")
 	return False
+
+
+def _essential(d: _State, ctype: bytes) -> bool:
+	"""IHDR, and the first PLTE of an indexed-colour image: without them no pixels can exist."""
+	return (ctype == b"IHDR" and b"IHDR" not in d.seen) or (ctype == b"PLTE" and d.ctype == 3 and d.plte is None)
 
 
 def _structure(d: _State, ctype: bytes, length: int) -> bool:
 	"""Type, position and declared length are checked before type plausibility, payload and CRC."""
 	d.chunk_count += 1
-	name = ctype.decode() if ctype.isalpha() else repr(ctype)
+	name = _name(ctype)
 	# 11.2.1 "The IHDR chunk shall be the first chunk in the PNG datastream."
-	d.require(d.chunk_count > 1 or ctype == b"IHDR", "11.2#ihdr-first", f"first chunk is {name}, not IHDR")
+	d.expect(d.chunk_count > 1 or ctype == b"IHDR", "11.2#ihdr-first", f"first chunk is {name}, not IHDR")
 	if d.idat_run == 1 and ctype != b"IDAT":
 		d.idat_run = 2
 	chunk = CHUNKS.get(ctype)
-	_naming(d, ctype, ctype in REGISTERED_OPAQUE or chunk is not None and (d.edition == 3 or ctype not in EDITION3_CHUNKS))
-	if chunk is None or (ctype in EDITION3_CHUNKS and d.edition < 3):
+	_naming(d, ctype, ctype in REGISTERED_OPAQUE or chunk is not None)
+	if chunk is None:
 		if ctype in REGISTERED_OPAQUE:
 			d.reach(REGISTERED_OPAQUE[ctype])
 		else:
 			_unknown(d, ctype)
+		return False
+	if ctype != b"IHDR" and b"IHDR" not in d.seen:
+		# A chunk before IHDR has no image to describe; 11.2#ihdr-first is recorded.
 		return False
 	if not _ordering(d, ctype) or not _content_allowed(d, ctype):
 		return False
 	if ctype == b"IDAT":
 		# 11.2.1 "Each pixel is a palette index; a PLTE chunk shall appear." Table 7: "Before first IDAT".
 		d.require(d.ctype != 3 or d.plte is not None, "11.2.2#required", "indexed-colour image data without a preceding PLTE")
-		# 11.2.3 "they shall appear consecutively with no other intervening chunks."
-		d.require(d.idat_run != 2, "11.2.3#consecutive", "IDAT chunks are not consecutive")
+		# 11.2.3 "they shall appear consecutively with no other intervening chunks." 10.2: the data of every IDAT
+		# chunk is part of the one zlib datastream.
+		d.expect(d.idat_run != 2, "11.2.3#consecutive", "IDAT chunks are not consecutive")
 	if ctype == b"IEND":
 		# 11.2 "one or more IDAT chunks, and shall end with an IEND chunk."
 		d.require(d.idat_run > 0, "11.2#idat-present", "IEND before any IDAT chunk")
-	fatal = ctype == b"IHDR" or (ctype == b"PLTE" and d.ctype == 3)
 	layout = chunk.layout(d) if callable(chunk.layout) else chunk.layout
-	return Parser(d, ctype, b"", layout, fatal).check_length(length)
+	return Parser(d, ctype, b"", layout, _essential(d, ctype)).check_length(length)
 
 
 def _chunk(d: _State, ctype: bytes, body: bytes, crc_ok: bool, placed: bool) -> None:
-	"""Dispatch structurally usable chunks after checking their CRC and typed content."""
-	if not crc_ok:
-		return
+	"""Dispatch known chunks that follow IHDR, applying the CRC policy, then their typed content."""
 	chunk = CHUNKS.get(ctype)
-	if chunk is None or (ctype in EDITION3_CHUNKS and d.edition < 3):
+	if chunk is None or (ctype != b"IHDR" and b"IHDR" not in d.seen):
 		return
-	d.seen.add(ctype)
+	essential = _essential(d, ctype)
+	# The CRC policy of the module docstring. Read both ways: the chunks the crc choice can drop.
+	both_ways = ctype == b"tRNS" or (ctype == b"PLTE" and d.ctype == 3 and not essential)
+	if not crc_ok and not both_ways:
+		if not essential and ctype not in (b"IDAT", b"IEND"):
+			return
+		if placed and ctype != b"IEND":
+			d.forced.add(("crc", "ignored"))
+	d.crc_ok = crc_ok or not both_ways
+	if d.crc_ok:
+		d.seen.add(ctype)
+	if ctype == b"tRNS":
+		d.trns.append(_Occurrence(d.crc_ok))
 	if not placed:
 		return
 	if d.idat_run == 2 and ctype[0] & 0x20:
 		# 14.3.2 "Decoders shall not assume more about the positioning of any ancillary chunk than is specified by
 		# the chunk ordering rules."
 		d.reach("14.3.2#ancillary-position")
-	fatal = ctype == b"IHDR" or (ctype == b"PLTE" and d.ctype == 3)
 	layout = chunk.layout(d) if callable(chunk.layout) else chunk.layout
 	try:
-		fields = Parser(d, ctype, body, layout, fatal).parse()
+		fields = Parser(d, ctype, body, layout, essential).parse()
 	except Ignored:
 		return
 	chunk.handler(d, fields)
@@ -323,17 +406,20 @@ def _naming(d: _State, ctype: bytes, defined: bool) -> None:
 	name = repr(ctype)
 	# 5.4 Table 6 "If the reserved bit is 1, the datastream does not conform to this version of PNG."
 	d.expect(not ctype[2] & 0x20, "5.4#reserved-bit", f"reserved bit set in {name}")
+	if ctype == b"iDOT":
+		# The uppercase second letter claims a public name that was never registered; the extension's definition
+		# takes precedence over that convention, and a strict reading of 5.7.2 would flag it.
+		d.reach("idot#public-name")
 	# 5.7.2 "A proposed public chunk type SHALL not be used in publicly available software or datastreams until defined as such".
 	d.expect(defined or bool(ctype[1] & 0x20), "5.7.2#undefined-public", f"undefined public chunk {name}")
 
 
 def _unknown(d: _State, ctype: bytes) -> None:
-	"""5.4 / 13.5: a chunk type this edition does not define."""
+	"""5.4 / 13.5: a chunk type that neither edition nor a known extension defines."""
 	fold = bytes(c & 0xDF for c in ctype)
-	known = [k for k in CHUNKS if k != ctype and (d.edition >= 3 or k not in EDITION3_CHUNKS)]
 	# 13.5 "Decoders shall recognize chunk types by a simple four-byte literal comparison; it is incorrect to
 	# perform case conversion on chunk types."
-	if any(fold == bytes(c & 0xDF for c in k) for k in known):
+	if any(fold == bytes(c & 0xDF for c in k) for k in CHUNKS if k != ctype):
 		d.reach("13.5#literal-comparison")
 	# 13.5 "Decoders should not flag an error if the reserved bit is set to 1 ... It is sufficient to treat a
 	# chunk with this bit set in the same way as any other unknown chunk type."
@@ -342,9 +428,10 @@ def _unknown(d: _State, ctype: bytes) -> None:
 	# 13.1 "Encountering an unknown critical chunk is a fatal condition for any decoder trying to extract the
 	# image from the datastream." 13.5 "A decoder trying to extract the image, upon encountering an unknown chunk
 	# in which the ancillary bit is 0, indicating a critical chunk, shall indicate to the user that the image
-	# contains information it cannot safely interpret."
-	name = ctype.decode() if ctype.isalpha() else repr(ctype)
-	d.require(bool(ctype[0] & 0x20), "5.4#unknown-critical", f"unknown critical chunk {name}")
+	# contains information it cannot safely interpret." The rest is decoded as if the chunk were absent.
+	if not d.expect(bool(ctype[0] & 0x20), "5.4#unknown-critical", f"unknown critical chunk {_name(ctype)}"):
+		d.forced.add(("critical", "ignored"))
+		return
 	# 13.1 "Encountering an unknown ancillary chunk is never an error. The chunk can simply be ignored."
 	d.reach("5.4#unknown-ancillary")
 	if d.idat_run == 2:
@@ -356,14 +443,24 @@ def _ordering(d: _State, ctype: bytes) -> bool:
 	name = ctype.decode()
 	if ctype in SINGLE and ctype in d.seen:
 		# 11.2 "Only one IHDR chunk is allowed"; 11.2.2 "There shall not be more than one PLTE chunk."
-		d.require(ctype != b"IHDR", "11.2#one-ihdr", "second IHDR chunk")
-		if ctype == b"PLTE":
-			d.require(d.ctype != 3, "11.2.2#single", "second PLTE chunk in an indexed-colour image")
-			d.expect(False, "11.2.2#single", "second (suggested) PLTE chunk ignored")
+		if ctype == b"IHDR":
+			d.expect(False, "11.2#one-ihdr", "second IHDR chunk ignored")
 			return False
+		if ctype == b"PLTE":
+			if d.ctype != 3:
+				d.expect(False, "11.2.2#single", "second (suggested) PLTE chunk ignored")
+				return False
+			# Either palette before IDAT can be the one a decoder keeps: the plte choice.
+			d.expect(False, "11.2.2#single", "second PLTE chunk in an indexed-colour image"
+				+ (" after IDAT ignored" if d.idat_run else "; the first or the last is used"))
+			return not d.idat_run
 		# Table 7 "Multiple allowed: No"; 13.1 names "the presence of multiple gAMA chunks" as a syntax error.
-		d.expect(False, SINGLE[ctype], f"second {name} chunk ignored")
-		return False
+		if ctype != b"tRNS":
+			d.expect(False, SINGLE[ctype], f"second {name} chunk ignored")
+			return False
+		# The specification asks for recovery from several tRNS chunks and names none to keep: the trns choice.
+		# Placement still decides whether this occurrence is used.
+		d.expect(False, SINGLE[ctype], "another tRNS chunk; the first or the last is used")
 	if ctype in BEFORE_PLTE and (d.plte is not None or d.idat_run):
 		# Table 7 "Before PLTE and IDAT"
 		d.expect(False, "5.6#before-plte", f"{name} after {'IDAT' if d.idat_run else 'PLTE'} ignored")
@@ -372,8 +469,7 @@ def _ordering(d: _State, ctype: bytes) -> bool:
 		# Table 7 "After PLTE; before IDAT"
 		d.expect(False, "5.6#after-plte", f"{name} {'after IDAT' if d.idat_run else 'before PLTE'} ignored")
 		return False
-	# Extension 1.5.0 3.7: "anywhere between the IHDR and IEND chunks except between IDAT chunks".
-	if ctype in BEFORE_IDAT and d.idat_run and not (ctype == b"eXIf" and d.edition == 2):
+	if ctype in BEFORE_IDAT and d.idat_run:
 		# Table 7 "Before IDAT"
 		if ctype == b"acTL":
 			# 11.3.6.1 "The acTL chunk must appear before the first IDAT chunk within a valid PNG stream."
@@ -550,32 +646,39 @@ def _decompress(d: _State) -> tuple[bytes, str | None]:
 	# 7.2 "Scanlines always begin on byte boundaries"; 9.1 "No filter type bytes are present in an empty pass."
 	needed = sum(h * (1 + (w * CHANNELS[d.ctype] * d.depth + 7) // 8)
 		for _, _, _, _, w, h in _reduced_images(d) if w and h)
+	adler = "rfc1950-2.3#adler32"
+	def fatal(e):
+		# 10.1 "Deflate-compressed datastreams within PNG are stored in the 'zlib' format". A fault that leaves rows
+		# undecoded ends decoding; a truncated stream is diagnosed by the scanlines it lacks.
+		return e.id != adler and not isinstance(e, inflate.Truncated) and len(e.output) < needed
 	def failure(e):
-		complete = len(e.output) >= needed
-		truncated = isinstance(e, inflate.Truncated)
-		# 10.1 "Deflate-compressed datastreams within PNG are stored in the 'zlib' format".
-		# Faults beyond the complete image have the same acceptance policy as an incomplete stream.
-		if complete and e.id != "rfc1950-2.3#adler32":
-			message = f"zlib stream incomplete: {e}" if truncated else f"invalid zlib stream after the image: {e}"
-			d.diagnostics.record("10.1#zlib-check", "WARN", message, cause=e.id)
-		elif truncated:
-			# Record truncation before scanline validation diagnoses the incomplete image.
-			d.diagnostics.record("10.1#zlib-check", "WARN", f"zlib stream incomplete: {e}", cause=e.id)
-		else:
+		if fatal(e):
 			d.diagnostics.record(e.id, "ERR", f"image data: {e}")
+		elif e.id == adler:
+			# RFC 1950 2.3 "A compliant decompressor must check CMF, FLG, and ADLER32, and provide an error
+			# indication if any of these have incorrect values." The data are complete and decoded.
+			d.expect(False, e.id, f"image data: {e}")
+			d.reach("10.1#deflate-valid")
+		else:
+			# Faults beyond the complete image have the same acceptance policy as an incomplete stream.
+			message = f"zlib stream incomplete: {e}" if isinstance(e, inflate.Truncated) else f"invalid zlib stream after the image: {e}"
+			d.diagnostics.record("10.1#zlib-check", "WARN", message, cause=e.id)
 	incomplete = None
 	try:
 		raw, end = inflate.zlib_decompress(z, StreamDiagnostics(d.diagnostics, "image data", failure=failure), observer=_idot_segments(d))
 	except inflate.InflateError as e:
 		# 10.1 "Deflate-compressed datastreams within PNG are stored in the "zlib" format"; the deflate data
 		# shall follow RFC 1951, the zlib framing RFC 1950.
-		if d.diagnostics.events[-1].level == "ERR":
+		if fatal(e):
 			d.reach("10.1#deflate-valid")
-			raise Reject(e.id, f"image data: {e}", d.diagnostics) from e
-		raw, end, incomplete = e.output, len(z), f"[{e.id}] {e}"
+			raise NoImage(e.id, f"image data: {e}", d.diagnostics) from e
+		if e.id == adler:
+			raw, end = e.output, e.end
+		else:
+			raw, end, incomplete = e.output, len(z), f"[{e.id}] {e}"
 	_idat_boundaries(d, end)
 	# 11.2.3 "Some images have unused trailing bytes at the end of the final IDAT chunk. ... A decoder should
-	# ignore these trailing bytes." (The 2nd edition does not mention them; both editions warn and ignore.)
+	# ignore these trailing bytes." (The 2nd edition does not mention them.)
 	d.expect(end == len(z), "11.2.3#trailing-bytes", f"{len(z) - end} bytes after the end of the zlib stream ignored")
 	return raw, incomplete
 
@@ -620,15 +723,18 @@ def _ihdr(d: _State, f: Values) -> None:
 
 def _plte(d: _State, f: Values) -> None:
 	"""11.2.2 PLTE Palette."""
-	d.plte = [entry.tuple() for entry in f.entries]
-	n = 3 * len(d.plte)
+	palette = [entry.tuple() for entry in f.entries]
+	if d.plte is None:
+		d.plte = palette
+	n = len(palette)
 	if d.ctype == 3:
 		# "The number of palette entries shall not exceed the range that can be represented in the image bit depth"
-		d.expect(n // 3 <= 1 << d.depth, "11.2.2#entries-vs-depth",
-			f"{n // 3} palette entries for bit depth {d.depth}; entries past {1 << d.depth} are unreachable")
+		d.expect(n <= 1 << d.depth, "11.2.2#entries-vs-depth",
+			f"{n} palette entries for bit depth {d.depth}; entries past {1 << d.depth} are unreachable")
 		# "It is permissible to have fewer entries than the bit depth would allow."
-		if n // 3 < 1 << d.depth:
+		if n < 1 << d.depth:
 			d.reach("11.2.2#fewer-entries")
+		d.palettes.append(_Occurrence(d.crc_ok, palette))
 	else:
 		# "For color types 2 and 6 (truecolor and truecolor with alpha), the PLTE chunk is optional. If present, it
 		# provides a suggested set of colors"
@@ -664,29 +770,26 @@ def _datastream_end(d: _State) -> None:
 	_apng_structure(d)
 
 
-def _index_range(d: _State, rows: list[list[int]]) -> None:
+def _index_range(d: _State, samples: list[int], palette: list[tuple[int, ...]]) -> None:
 	"""11.2.2 "any out-of-range pixel value found in the image data is an error." (both editions)"""
-	if d.ctype != 3:
-		return
-	limit = len(d.plte)
-	bad = sum(1 for row in rows for v in row if v >= limit) if limit < 1 << d.depth else 0
-	if not bad:
-		return
-	if d.edition == 2:
+	limit = len(palette)
+	bad = sum(1 for v in samples if v >= limit) if limit < 1 << d.depth else 0
+	if bad:
 		# 2nd ed. 11.2.3 "any out-of-range pixel value found in the image data is an error"; 2nd ed. 13.3:
 		# "Unexpected values in fields of known chunks ... shall be checked for and treated as errors. However, it is
 		# recommended that unexpected field values be treated as fatal errors only in critical chunks." Image data
 		# is a critical chunk.
-		d.require(False, "11.2.2#index-in-range", f"{bad} pixels index past the {limit}-entry palette")
-	# 13.1 "if out-of-range indexes are encountered ... Displaying the pixel as opaque black is one common error
-	# recovery tactic, and is now required by this specification."
-	d.expect(False, "13.1#index-opaque-black", f"{bad} pixels index past the {limit}-entry palette; rendered opaque black")
+		d.expect(False, "11.2.2#index-in-range", f"{bad} pixels index past the {limit}-entry palette")
+		# 13.1 "if out-of-range indexes are encountered ... Displaying the pixel as opaque black is one common error
+		# recovery tactic, and is now required by this specification."
+		d.expect(False, "13.1#index-opaque-black", f"{bad} pixels index past the {limit}-entry palette; rendered opaque black")
 
 
 # ---------------------------------------------------------------- 11.3 Ancillary chunks
 
 def _trns(d: _State, f: Values) -> None:
-	"""11.3.1.1 tRNS Transparency (2nd ed. 11.3.2.1)."""
+	"""11.3.1.1 tRNS Transparency (2nd ed. 11.3.2.1). Sets the value of the occurrence _chunk opened."""
+	assert d.trns and d.trns[-1].value is None, "each tRNS chunk has its own occurrence"
 	n = len(f.samples)
 	if d.ctype == 3:
 		# "The tRNS chunk shall not contain more alpha values than there are palette entries, but a tRNS chunk may
@@ -695,7 +798,7 @@ def _trns(d: _State, f: Values) -> None:
 			return
 		if n < len(d.plte):
 			d.reach("11.3.1.1#partial-palette")
-		d.trns = f.samples
+		d.trns[-1].value = f.samples
 		return
 	key = f.samples
 	if d.depth == 16:
@@ -706,7 +809,7 @@ def _trns(d: _State, f: Values) -> None:
 		# 13.12 "When comparing pixel values to tRNS chunk values to detect transparent pixels, the comparison
 		# shall be done exactly ... before any rescaling"
 		d.reach("13.12#exact-compare")
-	d.trns = key
+	d.trns[-1].value = key
 
 
 def _chrm(d: _State, f: Values) -> None:
@@ -1111,23 +1214,24 @@ CHUNKS = {
 
 # ---------------------------------------------------------------- Output: RGBA
 
-def _output(d: _State, rows: list[list[int]]) -> Image:
-	"""Expand to RGBA at 8 bits (bit depth 8 or less) or 16 bits."""
+def _output(d: _State, rows: list[list[int]], palette, trns) -> Image:
+	"""Expand to RGBA at 8 bits (bit depth 8 or less) or 16 bits, with one reading's palette and tRNS value."""
 	maxval = 65535 if d.depth == 16 else 255
 	flat = [v for row in rows for v in row]
 	n = d.width * d.height
 	ct = d.ctype
 	if ct == 3:
-		alpha = d.trns or b""
-		lut = [(*d.plte[i], alpha[i] if i < len(alpha) else 255) if i < len(d.plte) else (0, 0, 0, 255) for i in range(256)]
+		_index_range(d, flat, palette)
+		alpha = trns or b""
+		lut = [(*palette[i], alpha[i] if i < len(alpha) else 255) if i < len(palette) else (0, 0, 0, 255) for i in range(256)]
 		if any(lut[v][3] < 255 for v in set(flat)):
 			d.reach("11.3.1.1#applied")
-		return Image(d.width, d.height, maxval, array("B", b"".join(bytes(lut[v]) for v in flat)), d.diagnostics)
+		return Image(d.width, d.height, maxval, array("B", b"".join(bytes(lut[v]) for v in flat)))
 	nch = CHANNELS[ct]
-	if ct in (0, 2) and d.trns is not None:
+	if ct in (0, 2) and trns is not None:
 		# 11.3.1.1 "Pixels of the specified grey sample value or RGB sample values are treated as transparent
 		# (equivalent to alpha value 0); all other pixels are to be treated as fully opaque"
-		key = d.trns
+		key = trns
 		alpha = [0 if tuple(flat[i:i + nch]) == key else maxval for i in range(0, len(flat), nch)] if nch > 1 \
 			else [0 if v == key[0] else maxval for v in flat]
 		if 0 in alpha:
@@ -1148,7 +1252,7 @@ def _output(d: _State, rows: list[list[int]]) -> Image:
 		for c in range(3):
 			out[c::4] = flat[c::nch]
 	out[3::4] = alpha
-	return Image(d.width, d.height, maxval, array("H" if maxval > 255 else "B", out), d.diagnostics)
+	return Image(d.width, d.height, maxval, array("H" if maxval > 255 else "B", out))
 
 
 def to_pam(img: Image) -> bytes:
@@ -1161,28 +1265,32 @@ def to_pam(img: Image) -> bytes:
 	return head + samples.tobytes()
 
 
+def digest(img: Image) -> str:
+	"""pam.digest of the image's canonical RGBA16, the form the harness compares."""
+	return pam.digest(pam.rgba16(pam.parse(to_pam(img))))
+
+
 def main(argv: list[str]) -> int:
 	if argv == ["--version"]:
 		print(VERSION)
 		return 0
-	edition = 3
-	if argv[:1] == ["--edition"]:
-		edition = int(argv[1])
-		argv = argv[2:]
-	if len(argv) != 2 or edition not in (2, 3):
-		print("usage: refpng.py [--edition 2|3] in.png out.pam | --version", file=sys.stderr)
+	if len(argv) != 2:
+		print("usage: refpng.py in.png out.pam | --version", file=sys.stderr)
 		return 2
 	with open(argv[0], "rb") as f:
 		data = f.read()
 	record = Diagnostics()
 	try:
-		img = decode(data, edition, diagnostics=record)
+		decoded = decode(data, diagnostics=record)
+		for i in decoded.interpretations:
+			print(f"INFO interpretation={','.join(f'{t}:{o}' for t, o in i.choices) or 'none'} digest={digest(i.image)}")
+		img = decoded.interpretations[0].image
 		with open(argv[1], "wb") as f:
 			f.write(to_pam(img))
-	except Reject:
+	except NoImage:
 		return 1
 	finally:
-		# The same accumulated record is emitted for success, Reject, MemoryError or a programming error.
+		# The same accumulated record is emitted for success, NoImage, MemoryError or a programming error.
 		# Unexpected exceptions propagate with a traceback and no OK line.
 		record.emit()
 	print(f"OK {img.width} {img.height} 4 {16 if img.maxval > 255 else 8}")

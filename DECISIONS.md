@@ -19,14 +19,25 @@ lists what it doesn't test.
 Two editions of the specification matter: the second (ISO/IEC 15948:2003) and the third (W3C,
 2025). PNG 1.0 and 1.1 count as the second.
 
-Following the older edition is fine. Following one edition on some tests and the other on
-others is what the report calls "mixed". The label describes what a decoder does, whatever its
-authors intended. Only places where the editions contradict each other count towards it. The
-third edition also adds features (APNG, cICP, eXIf), and supporting them doesn't make a decoder
-mixed.
+Every result is rated under each edition separately, and the report shows both ratings side by
+side. There is no single verdict and no "mixed" label: following one edition rather than the
+other isn't a defect, and which one a reader needs is their call, not the report's. The two
+ratings differ only where the texts contradict each other.
 
-There is one such contradiction. For a palette index past the end of PLTE, the second edition
-requires rejecting the file, and the third requires rendering the pixel opaque black.
+A rating is made through a lens: an edition's text plus the extensions. Under the second
+edition, the chunks the third edition added (APNG, cICP, mDCV, cLLI, eXIf) are third-party
+extensions with their own rules, like the W3C registered extensions and Apple's iDOT.
+Supporting them is second-edition compliance with extensions, not a departure from it, and a
+decoder that mishandles one is rated the same way under both lenses.
+
+There is one contradiction. For a palette index past the end of PLTE, the second edition
+requires rejecting the file, and the third requires rendering the pixel opaque black. The
+substitution happens where the index is resolved, at palette lookup, so the pixel is black in
+the image's own colour space and then goes through whatever colour management every other
+pixel gets. The text says "displaying the pixel as opaque black", but display black regardless
+of the profile would mean tracking the pixel through the colour pipeline, which no decoder
+does, and a target that cannot show black would still have to show something. tRNS can't be
+longer than PLTE, so such a pixel is opaque under every reading.
 
 tRNS and bKGD values with bits set above the image's bit depth look like a second contradiction,
 but they aren't. The second edition says "the least significant bits are used", which already
@@ -39,10 +50,11 @@ design has to leave room for it.
 
 ## The test suite
 
-The suite holds every conformance test plus every file that any implementation fails. Each
-test lists the outcomes it allows under each edition, and how serious each one is: a pass, a
-"should" violation or a "must" violation. The filename prefix (`y_`, `n_`, `r_`, `i_`, borrowed
-from JSONTestSuite) summarizes that list. A file has one fault; a file with two faults would be
+The suite holds every conformance test plus every file that any implementation fails. For each
+test, each lens says what a decoder is to do with the file: display it, recover from its fault,
+accept or reject it as it likes, or reject it. Going against that is a "must" violation where
+the specification requires and a "should" violation where it recommends. The filename prefix
+(`y_`, `n_`, `r_`, `i_`, borrowed from JSONTestSuite) summarizes the third edition's answer. A file has one fault; a file with two faults would be
 two tests. A behaviour that breaks a different set of decoders gets its own test, which is why
 tRNS has a test for each bit depth.
 
@@ -62,12 +74,33 @@ redistribution only matters if it is more than an obvious, minimal example of it
 since the tests are about representation, its pixels can be swapped for others. Attribution
 still needs writing.
 
-## The reference decoder
+## The reference
 
-`refpng.py` is written from the specification, with its own inflater (`inflate.py`) so that
-zlib's quirks can't leak into the expected results. It is a column in the report like any other
-decoder. Every check names a spec clause and quotes the sentence it enforces, much like the
-Vulkan validation layer. It has to be small, readable and impossible to get subtly wrong.
+The reference has two jobs that stay apart: decoding and judging.
+
+`refpng.py` decodes. It is written from the specification, with its own inflater (`inflate.py`)
+so that zlib's quirks can't leak into the expected results. It knows nothing about editions. From one parse it produces every
+interpretation of the file's pixels that the specification or its recovery advice defines, each
+named by the choices that produced it (the first or the last of two tRNS chunks, a chunk with a
+bad CRC dropped or used as stored, an unknown critical chunk ignored), and it records every
+fault and every clause the file reaches. It gives up only when no pixels can exist: no usable
+IHDR, no image data, image data that cannot be inflated to the last row. Everything else is
+decoded and recorded, because whether a decoder ought to have stopped is not the decoder's
+question.
+
+`pnglens.py` judges. Given the record of faults and a lens, it says whether the file conforms,
+lists the faults in words, says what the specification expects a decoder to do with the file,
+and rates each interpretation as recommended or arguable. Validators are judged on its
+conformance verdict, decoders on its expectation.
+
+The reference appears in the report as two columns, one per lens: the decoder with that lens's
+verdict applied, rejecting what the lens says must be rejected and otherwise writing its
+best-rated interpretation. Each passes every test under its own lens by construction, and the
+run fails if it doesn't. Under the other lens it shows exactly where the editions contradict
+each other, which is the one place they do.
+
+Every check names a spec clause and quotes the sentence it enforces, much like the Vulkan
+validation layer. The reference has to be small, readable and impossible to get subtly wrong.
 Performance doesn't matter much.
 
 "Impossible to get subtly wrong" turned out to mean something specific. A rule that applies
@@ -80,6 +113,11 @@ severity has to match its clause, which is asserted.
 ## Judging
 
 Warnings never count against a decoder. Crashes, hangs and memory errors are must-violations.
+
+Silence is recorded. A decoder that accepts a non-conforming file and says nothing is doing
+something different from one that accepts it with a diagnostic, and the report shows which it was:
+each column's count of silent accepts under each lens, next to its violations. It has no severity,
+since what to make of it is the reader's call.
 
 So is running out of memory. A decoder fed a hostile file should return an error. If it
 exhausts memory instead, any program that opens untrusted images can be taken down by one
@@ -105,16 +143,30 @@ one, and exactly what this kind of testing can catch. Decoders that only produce
 reduce 16-bit samples by taking the high byte or by rounding. Palette and sub-byte expansion
 must still be exact.
 
-Some files allow more than one correct result:
+Each implementation's output is an observation. Outputs that are identical pixel for pixel
+share a bucket, and the report shows, per test, how the implementations distribute over the
+buckets. A lens labels a bucket that matches one of the reference's interpretations: expected
+when the interpretation's choices are the recommended ones, arguable otherwise. A bucket the
+reference does not produce is wrong, and a populous one is a reason to look at the reference
+first. The same holds in the one place the editions contradict each other: under the third
+edition the opaque-black bucket is the expected one, under the second it is an accepted
+invalid file.
 
-- An ancillary chunk with a bad CRC may be dropped, or used anyway (✓ᶜ), since skipping CRC
-  checks is a legitimate tradeoff.
-- With several tRNS chunks, keeping either the first or the last (✓ᵗ) is coherent. Any other
+Some files allow more than one coherent result, and the report shows which one each decoder
+chose rather than ruling:
+
+- An ancillary chunk with a bad CRC may be dropped, which the specification recommends, or
+  used anyway, since skipping CRC checks is a legitimate tradeoff.
+- With several tRNS chunks, keeping either the first or the last is coherent. Any other
   pixels are wrong. Rejecting the file is a should-violation, since the spec asks decoders to
   recover.
 - If the compressed image data is corrupt only after the last row, decoders may accept or
   reject. Some stop inflating once they have every row, and never see the damage. A wrong
   Adler-32 checksum is still fatal.
+
+Image data that ends before the last row has no reference pixels. The specification says an
+unexpected end of stream may be fatal, so accepting and rejecting both pass, and what a decoder
+shows for such a file is reported without being judged.
 
 A DEFLATE stream that declares 31 or 32 distance codes must be decoded. Only 30 codes are
 defined, and zlib rejects such streams, so this looks like a matter of implementation choice.
@@ -130,21 +182,20 @@ chunk. Section 13.2 recommends ignoring such a chunk but doesn't require it, so 
 reject the file, though it shouldn't. A decoder that shows the image must produce the same
 pixels as it would for the file without the cICP chunk.
 
-Apple's iDOT chunk was never registered, and its uppercase second letter claims a public name
-it has no right to. Strictly, that makes the file non-conforming. But the spec doesn't respect
-the private bit itself: the APNG chunks it standardized all have lowercase second letters. And
-Apple has published a great many PNG files carrying iDOT that work fine. So a file with iDOT
-counts as conforming. iDOT exists only to speed up decoding, so a file must always decode to
-the same pixels as it would without the chunk. A decoder that rejects such a file, as Apple's
-ImageIO sometimes does, has a bug.
+Apple's iDOT chunk is an extension. It was never registered, and its uppercase second letter
+claims a public name, which the naming rules alone would make a fault. An extension's
+definition takes precedence over the default it collides with, so a file with iDOT conforms
+under both lenses, and a validator that flags the name anyway is recorded as strict rather than
+wrong. iDOT exists only to speed up decoding, so a file must always decode to the same pixels
+as it would without the chunk. A decoder that rejects such a file, as Apple's ImageIO sometimes
+does, has a bug.
 
-Otherwise the naming rules hold. A file with a public chunk that neither the spec nor the
-registry defines doesn't conform, and neither does a chunk name with the reserved bit set. iDOT
-(under the third edition) and the APNG chunks are the only exceptions. A validator may follow
-either edition's reading, and the report says which, as it does for decoders.
+Otherwise the naming rules hold. A file with a public chunk that neither the spec, the
+registry nor a known extension defines doesn't conform, and neither does a chunk name with the
+reserved bit set.
 
-eXIf counts as a second-edition chunk too, since the registry added it in 2017. People reading
-this report care about what software does today, not about what it did before eXIf existed.
+eXIf is an extension under the second edition, registered in 2017, and part of the text in the
+third. Both lenses treat it the same.
 
 An iDOT chunk only conforms if it actually works. Its segments have to cover the image's rows in
 order. Each offset has to point at the IDAT chunk where its segment starts. And each segment has
@@ -155,8 +206,10 @@ after a tool rewrites the IDAT chunks. A validator that checks iDOT at all shoul
 
 Validators like pngcheck are judged on whether the file conforms to the specification, which
 isn't the same as whether a decoder must decode it. A chunk name with the reserved bit set is
-the clearest case: decoders must ignore the chunk and show the image, but the spec says the
-file doesn't conform, and a validator should say so.
+the clearest case: the file doesn't conform, and a validator should say so, but a decoder
+treats the chunk as unknown and shows the image. Section 15.3.3 makes that a condition of
+decoder conformance, so a decoder that rejects the file is non-conforming, whatever 13.5's
+"should not flag an error" might suggest about the severity.
 
 ## Implementations
 
@@ -188,7 +241,7 @@ are memory-capped so a runaway decoder can't take down the rest of the system.
 ## The report
 
 The report is one minified HTML file with no JavaScript, in a dark theme. Implementations are
-sorted by their number of must-violations, then should-violations. There is no overall score,
+sorted by their number of must-violations, then should-violations, under the third edition. There is no overall score,
 because choosing weights for one would be an editorial judgement. A decoder that passes every
 test only means the suite needs more tests.
 
@@ -201,6 +254,8 @@ The human disclaimer is written in the README, and the report copies it from the
 ## Still open
 
 - Recording documented deviations.
+- A shim audit: each shim relays its library's diagnostic channel, or the column records that the
+  library has none, so a silent accept can be read as the library's choice rather than the shim's.
 - Attribution for third-party test files, and a licence for the repo.
 - A script to clone and build upstream development versions, possibly with sanitizer builds.
 - Minimizing the suite.
@@ -209,9 +264,7 @@ The human disclaimer is written in the README, and the report copies it from the
   before the image's first row is defined. That would be a bug: a file written that way decodes
   to the wrong pixels in every ordinary decoder. But it's an easy mistake to make, so ImageIO is
   worth checking.
-- A "real-world" profile beside the two editions. The editions would then be strict readings of
-  their texts (iDOT conforms under neither, and eXIf is unknown to the second), and the
-  real-world concessions (iDOT, eXIf in the second edition's era) would live in the profile.
-  A validator's verdict could then say whether it is strict or follows real-world practice.
+- A colour management test for the out-of-range palette index: an indexed image with such an
+  index and an ICC profile that maps black elsewhere, to show where the substitution happens.
 - The fourth edition, now a W3C editor's draft: what it changes for decoders, and whether it
   should get its own set of expectations.

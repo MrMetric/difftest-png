@@ -32,7 +32,7 @@ needs its own toolchain:
 
 | implementations | needs |
 |---|---|
-| reference-ed2, reference-ed3, pillow, pypng | nothing beyond `uv` |
+| reference-2, reference-3, pillow, pypng | nothing beyond `uv` |
 | opencv | `uv sync --extra opencv` |
 | libpng, libspng | their headers (`libpng`, `libspng`) and a C compiler |
 | stb_image, lodepng, wuffs | a C/C++ compiler (sources are in `impls/`) |
@@ -47,38 +47,46 @@ needs its own toolchain:
 
 ## What a test is
 
-`decode/manifest.tsv` has one row per file in `decode/`:
+`decode/manifest.tsv` has one row per file in `decode/`, all derived from the reference decoder
+(`refpng.py`, with its own inflater in `inflate.py`) and the lenses (`pnglens.py`). A lens is an
+edition's text plus the extensions: lens 2 is the second edition (ISO/IEC 15948:2003), lens 3 the
+third (W3C 2025), each with the W3C registered extensions, eXIf, APNG, cICP, mDCV, cLLI and
+Apple's iDOT.
 
-- `ed2`, `ed3`: the outcomes the test allows under the second (ISO/IEC 15948:2003) and third
-  (W3C 2025) editions, each with a severity: `pixels=pass,reject=should` means decoding to
-  the expected pixels passes and rejecting the file is a should-violation. Anything not listed,
-  and any crash, hang, out-of-memory or memory error, is a must-violation.
-- `hash2`, `hash3`: digest of the expected pixels (RGBA, 16 bits per sample) per edition.
-  Two kinds of file also accept other pixels, which `run.py` derives with the reference decoder
-  at run time and the report marks: an ancillary chunk with a bad CRC used as stored (✓ᶜ),
-  and several tRNS chunks with the last one kept (✓ᵗ).
-- `conforms2`, `conforms3`: whether the file conforms to each edition, i.e. the reference decodes
-  it without recording any fault. Validators are judged on this: they must accept exactly the
-  conforming files. It differs from what a decoder must do: a file with a reserved-bit chunk name
-  doesn't conform, but decoders must still display it.
+- `images`: every interpretation of the file's pixels that the specification or its recovery
+  advice defines, as `choices=digest` items joined by `|`. A choice is `topic:option`: the first
+  or last of several tRNS (`trns`) or PLTE (`plte`) chunks, a chunk with a bad CRC dropped or used
+  as stored (`crc`), an unknown critical chunk ignored (`critical`); `none` is a file with no open
+  decision. The digest is of the pixels as RGBA, 16 bits per sample. Empty when no pixels can
+  exist (no usable IHDR, no image data, image data that ends before the last row).
+- `expect2`, `expect3`: what each lens says a decoder is to do with the file: `display` it
+  (rejecting is a must-violation), `recover` from its fault (rejecting is a should-violation),
+  `may-reject` (either is a pass), or `must-reject` (accepting is a must-violation). Any crash,
+  hang, out-of-memory or memory error is a must-violation.
+- `conforms2`, `conforms3`: whether the file conforms under each lens, i.e. the reference records
+  no fault that applies. Validators are judged on this: they must accept exactly the conforming
+  files. It differs from what a decoder must do: a file with a reserved-bit chunk name doesn't
+  conform, but decoders must still display it.
+- `strict`: facts a strict validator may flag although the file conforms (iDOT's unregistered
+  public name); a validator that rejects such a file is recorded as strict, not wrong.
 - `clause`: the clause of `spec/clauses.tsv` the test is about; `reaches`: every clause the
   reference decoder reaches on the file. `run.py` fails if a file stops reaching one of them,
   so an optimizer or a hand edit cannot quietly turn a test into a different test.
-- The filename prefix summarises the third-edition outcomes: `y_` must decode, `n_` must be
-  rejected, `r_` should be recovered, `i_` is the implementation's choice.
+- The filename prefix summarises `expect3`: `y_` display, `r_` recover, `i_` may reject,
+  `n_` must reject.
 
-Expectations come from the reference decoder (`refpng.py`, with its own inflater in
-`inflate.py`), which checks every clause of `spec/clauses.tsv` and names it in each message.
-After editing a file, `uv run expect.py` refreshes the hashes and traces (it refuses to drop a
-declared clause without `--retrace`). Expectations come only from the faults the reference reports,
-so `expect.py` also refuses any file on which the reference reaches a fault clause without
-reporting it.
+Every check in the reference names a clause of `spec/clauses.tsv` and quotes the sentence it
+enforces. After editing a file, `uv run expect.py` refreshes the manifest. It refuses to drop a
+declared clause without `--retrace`, and to leave a file whose prefix no longer matches `expect3`
+without `--rename`, which renames it.
 
-Pixels are compared with no colour management. Colour kept under fully transparent pixels
-(preserved, zeroed, or altered) and how 8-bit-only decoders reduce 16-bit images are recorded
-as properties of the implementation, not failures. A test where the two editions require
-different results passes if either is met; the summary says which edition each implementation
-is consistent with, and "mixed" when it follows each edition on different tests.
+Each implementation's output is bucketed with the identical ones and labelled with the
+interpretations it matches; the report shows which choice each decoder made rather than ruling.
+A label rates as recommended or, for a choice the specification does not prefer, arguable; an
+output that matches no interpretation is wrong. Pixels are compared with no colour management.
+Colour kept under fully transparent pixels (preserved, zeroed, or altered) and how 8-bit-only
+decoders reduce 16-bit images are recorded as properties of the implementation, not failures.
+Every result is rated under both lenses, and the report shows both side by side.
 
 ## Upstream development revisions
 
@@ -94,9 +102,12 @@ skipped when it does not hold them. A script to clone and build them is not writ
   file; `pam.py` reads their output; `report.py` renders the HTML
 - `refpng.py`, `pngfields.py`, `pngdiagnostics.py`, `inflate.py` the reference decoder;
   `spec/clauses.tsv` the clauses it checks; `test_refpng.py` its regression tests
+- `pnglens.py` reads the reference's record through each lens, and with `--lens` is the decoder
+  behind the `reference-2` and `reference-3` columns; `test_pnglens.py` its tests
 - `impls.toml`, `impls/` the implementations and the shim each one runs through
   (`impls/CONTRACT.md`)
-- `expect.py` derives expectations; `pick.py` chooses the suite from a candidate pool (every
-  conformance test, and every file any implementation fails); `minimize.py` shrinks each file
-  while every implementation's outcome stays the same (optional)
+- `expect.py` writes the manifest from the reference decoder and the lenses; `pick.py` chooses
+  the suite from a candidate pool (every conformance test, and every file any implementation
+  fails); `minimize.py` shrinks each file while every implementation's outcome stays the same
+  (optional)
 - `decode/` the test files; `encode/` will hold encoder tests

@@ -5,13 +5,18 @@
 Each round proposes smaller variants of each file (drop an ancillary chunk, recompress the image
 data as one zlib stream, crop the image to half its width or height) and keeps the smallest
 variant that passes three checks:
-- every implementation's outcome, severity and properties are unchanged (all columns rerun);
-- the reference decoder finds exactly the same faults (WARN/ERR clause ids) under both editions;
+- every implementation's result is unchanged, judged as run.py judges it (all columns rerun): its
+  outcome and severity under each lens, its label (the interpretations it matches and the
+  properties of the match) and its rating;
+- the reference decoder, decoding in-process, records exactly the same fault clause ids, produces
+  interpretations with the same choices, and each lens's verdict (conformance, expectation, strict
+  notes) is the same;
 - any rule the file stops reaching is still reached by another file of the suite.
 Files are rewritten in place; afterwards run `uv run expect.py --retrace` and a full run.py.
 The memcheck pass is not part of the comparison: compare the full run before and after.
 """
 import argparse
+import json
 import os
 import struct
 import sys
@@ -170,26 +175,17 @@ def submit(path: Path, impls: list[run.Impl], pool: ProcessPoolExecutor) -> dict
 	return {i.name: pool.submit(run.run_one, i, path, False) for i in impls}
 
 
-def evaluate(path: Path, futs: dict, impls: list[run.Impl], cons: dict[str, str]) -> dict:
-	"""Outcome vector, fault ids and reached rules of one file, judged exactly as run.py judges it."""
+def evaluate(path: Path, futs: dict, impls: list[run.Impl]) -> dict:
+	"""Result vector, the reference's judgement and reached rules of one file, judged exactly as run.py judges it."""
 	raw = {n: f.result() for n, f in futs.items()}
-	refs = {ed: raw[f"reference-ed{ed}"] for ed in run.EDITIONS}
-	allowed, hashes, faults, reached = {}, {}, set(), set()
-	for ed, r in refs.items():
-		allowed[ed] = run.parse_outcomes(expect.outcomes(r, cons))
-		fatal, recovered = expect.faults(r["stdout"])
-		faults |= {(ed, c) for c in fatal + recovered}
-		reached |= run.reached_of(r["stdout"])
-		hashes[ed] = []
-	test = run.Test(id=path.stem, file=path.name, clause="", reaches=[], allowed=allowed, hashes=hashes, description="")
-	expected = {ed: refs[ed]["image"] if refs[ed]["verdict"] == "accept" else None for ed in run.EDITIONS}
-	ref_impls = {ed: next(i for i in impls if i.name == f"reference-ed{ed}") for ed in run.EDITIONS}
-	alts = run.reference_alternatives(ref_impls, path, refs[3]["stdout"])
-	vector = {}
-	for i in impls:
-		j = run.judge(test, i, raw[i.name], expected, alts)
-		vector[i.name] = (str(j["outcome"]), j["worst"], j.get("alpha0"), j.get("16to8"), j.get("alternative"))
-	return {"vector": vector, "faults": faults, "reached": reached}
+	reading = expect.reading(path)
+	judged = run.judge_test(impls, raw, reading)
+	vector = {name: json.dumps({k: j.get(k) for k in ("outcome", "severity", "label", "rating", "strict")}, sort_keys=True)
+		for name, j in judged.items()}
+	faults = {e.id for e in reading.diagnostics.events if e.level != "INFO"}
+	verdicts = {lens: (v.conforms, v.expectation, v.strict_notes) for lens, v in reading.verdicts.items()}
+	reference = (faults, tuple(i.choices for i in reading.interpretations), verdicts)
+	return {"vector": vector, "reference": reference, "reached": set(reading.diagnostics.reached)}
 
 
 def main() -> None:
@@ -202,14 +198,13 @@ def main() -> None:
 	manifest = ROOT / "decode" / "manifest.tsv"
 	tests = run.load_manifest(manifest)
 	impls = [i for i in run.load_impls(args.head) if run.unavailable(i) is None]
-	cons = expect.consequences()
 	work = ROOT / "out" / "min"
 	work.mkdir(parents=True, exist_ok=True)
 	files = {t.id: manifest.parent / t.file for t in tests}
 	active = set(args.tests or files)
 	with ProcessPoolExecutor(os.cpu_count()) as pool:
 		pending = {tid: submit(files[tid], impls, pool) for tid in files}
-		base = {tid: evaluate(files[tid], pending[tid], impls, cons) for tid in files}
+		base = {tid: evaluate(files[tid], pending[tid], impls) for tid in files}
 		before = sum(p.stat().st_size for p in files.values())
 		for rnd in range(args.rounds):
 			reach_count: dict[str, int] = {}
@@ -227,10 +222,10 @@ def main() -> None:
 			for tid in sorted(active):
 				best = None
 				for cand, p, futs in proposals[tid]:
-					ev = evaluate(p, futs, impls, cons)
+					ev = evaluate(p, futs, impls)
 					tried += 1
 					lost = base[tid]["reached"] - ev["reached"]
-					if ev["vector"] == base[tid]["vector"] and ev["faults"] == base[tid]["faults"] and all(reach_count[c] > 1 for c in lost):
+					if ev["vector"] == base[tid]["vector"] and ev["reference"] == base[tid]["reference"] and all(reach_count[c] > 1 for c in lost):
 						best = (cand, ev)
 						break
 				if best is None:
