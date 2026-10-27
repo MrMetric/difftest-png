@@ -119,6 +119,5 @@ skipped when it does not hold them. A script to clone and build them is not writ
   in the shapes zlib never emits); three of its files come from `zopfli`, `libdeflate-gzip` and
   `7z`, skipped with a notice when not installed
 - `expect.py` refreshes the manifest from the reference decoder and the lenses after a file is
-  edited by hand; `minimize.py` shrinks a file while every implementation's outcome stays the
-  same, which the generated files leave it nothing to do
+  edited by hand
 - `decode/` the test files; `encode/` will hold encoder tests

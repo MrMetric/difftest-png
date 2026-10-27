@@ -92,12 +92,9 @@ are about representation. A new third-party file is a lead for a new generated c
 The picture sets the size of the files: 13 by 15 is the smallest that exercises every Adam7
 pass and every padding case, so the files are as small as they can be while still showing it.
 The exceptions are the tests whose point is size (the dimension cases, the large text chunks,
-the decompression bombs). `minimize.py` was written for the mined third-party files, whose
-sizes and chunks were whatever their authors chose: it drops ancillary chunks, recompresses the
-image data and crops the image while every implementation's result stays the same. A generated
-file has no stray chunks and is already the picture's size, and the crop would change the
-picture, so the tool has nothing left to do. Optimizers like `oxipng` are only safe where they
-can't change what a file tests.
+the decompression bombs). Lossless optimizers like `oxipng` are only safe where they can't
+change what a file tests, and for most generated files the representation is exactly what is
+tested, so the generator writes each file at its size and nothing rewrites it afterwards.
 
 ## The reference
 
@@ -283,7 +280,6 @@ The human disclaimer is written in the README, and the report copies it from the
   library has none, so a silent accept can be read as the library's choice rather than the shim's.
 - A licence for the repo.
 - A script to clone and build upstream development versions, possibly with sanitizer builds.
-- `minimize.py` has nothing left to do on a generated suite; it can go.
 - APNG frames, colour management and encoders.
 - Whether Apple's ImageIO treats the row before each iDOT segment as zeros, the way the row
   before the image's first row is defined. That would be a bug: a file written that way decodes
