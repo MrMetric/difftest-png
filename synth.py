@@ -818,11 +818,11 @@ def chunks(c: Corpus) -> None:
 			return zlib_png(zlib.compress(r[:at] + bytes([b]) + r[at + 1:], 6))
 		# A decoder that takes the invalid byte for a valid filter type reconstructs the scanline's stored bytes with it.
 		# On the first scanline Up reads as None and Paeth as Sub, since the scanline before it is all zeros.
-		by_pixels: dict[str, list[str]] = {}
-		for n, f in enumerate(B.FILTERS):
-			by_pixels.setdefault(c.digest_of(with_byte(n)), []).append(f.title())
+		by_pixels: dict[str, list[int]] = {}
+		for n in range(len(B.FILTERS)):
+			by_pixels.setdefault(c.digest_of(with_byte(n)), []).append(n)
 		c.emit(name, with_byte(byte), "must-reject", "9.2#filter-types", what, None,
-			explain={f"the invalid byte taken as filter {' or '.join(names)}": with_byte(B.FILTERS.index(names[0].lower())) for names in by_pixels.values()})
+			explain={f"the invalid byte taken as filter {' or '.join(f'{B.FILTERS[n].title()} ({n})' for n in ns)}": with_byte(ns[0]) for ns in by_pixels.values()})
 
 
 # ---------------------------------------------------------------- ancillary chunks: content and position
