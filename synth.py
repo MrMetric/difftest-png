@@ -6,7 +6,7 @@ Deletes every *.png in DIR, writes each case as DIR/<prefix>_<name>.png with the
 (expect.PREFIX), writes DIR/manifest.tsv (expect.row for each file, plus expect.KEPT: a `note` column
 saying what the file is, `about` with the clauses the case names, and `family`, the SECTIONS name of the
 generator section that wrote it), and prints the count. Every file shows the picture at 13x15 as 8-bit RGB, non-interlaced,
-filter None, zlib level 6, unless the test is about one of those: then it uses the colour type, depth or
+filter None, zlib level 6, unless the test is about one of those: then it uses the color type, depth or
 size the test needs, and a smaller size is the picture's top-left crop. Files are as directly comparable
 as possible outside the trait being tested, so most decode to the identical image.
 
@@ -101,7 +101,7 @@ def pixels(v: Variant, *, trns: bytes | None = None, palette: tuple[tuple[int, i
 	assert palette is None
 	if trns is None:
 		return out
-	assert v.colour_type in (0, 2), "tRNS applies to greyscale and truecolour only"
+	assert v.colour_type in (0, 2), "tRNS applies to grayscale and truecolor only"
 	mask = (1 << v.bit_depth) - 1
 	key = tuple(s & mask for s in struct.unpack(f">{len(trns) // 2}H", trns))
 	assert len(key) == B.CHANNELS[v.colour_type], trns
@@ -587,7 +587,7 @@ def ihdr_raw(w: int, h: int, bd: int, ct: int, comp: int = 0, fm: int = 0, il: i
 
 
 def quantized_rows(ct: int, bd: int) -> list[list[int]]:
-	"""The picture at a colour type and depth Table 12 does not allow, quantized as picture.variant would."""
+	"""The picture at a color type and depth Table 12 does not allow, quantized as picture.variant would."""
 	pix = [[picture.picture(x, y) for x in range(picture.W)] for y in range(picture.H)]
 	match ct:
 		case 0:
@@ -628,10 +628,10 @@ def ihdr(c: Corpus) -> None:
 			data = B.serialize(rows, W, H, ct, 8)
 		parts = [ihdr_raw(W, H, bd, ct)] + plte + [B.chunk(b"IDAT", zlib.compress(data, 6)), IEND]
 		c.emit(f"ihdr-{picture.CT_NAME[ct]}-bd{bd}", B.assemble(parts), "must-reject", "11.2.1#combination" if bd in (1, 2, 4, 8, 16) else "11.2.1#bit-depth",
-			f"colour type {ct} at bit depth {bd} is not an allowed combination; {layout}", None)
+			f"color type {ct} at bit depth {bd} is not an allowed combination; {layout}", None)
 	for ct in (1, 5, 7):
 		c.emit(f"ihdr-ct{ct}", png(G8, ihdr=ihdr_raw(W, H, 8, ct)), "must-reject", "11.2.1#colour-type",
-			f"colour type {ct} is undefined; data is 8-bit greyscale", None)
+			f"color type {ct} is undefined; data is 8-bit grayscale", None)
 	z = zdata(RGB8)
 	c.emit("ihdr-not-first", B.assemble([B.chunk(b"tEXt", b"k\0v"), B.ihdr(W, H, 8, 2), B.chunk(b"IDAT", z), IEND]), "must-reject", "11.2#ihdr-first",
 		"a tEXt chunk precedes IHDR")
@@ -650,9 +650,9 @@ def plte(c: Corpus) -> None:
 	c.emit("plte-len-not-mult3-pal", png(P8, plte=[pl(pb + b"\x80")]), "must-reject", "11.2.2#invalid-indexed",
 		f"palette length {len(pb) + 1} in an indexed image", None)
 	c.emit("plte-len-not-mult3-rgb", png(before=[pl(pb + b"\x80")]), "recover", "11.2.2#invalid-truecolour",
-		f"palette length {len(pb) + 1} in a truecolour image, a suggested palette")
+		f"palette length {len(pb) + 1} in a truecolor image, a suggested palette")
 	c.emit("plte-empty-pal", png(P8, plte=[pl(b"")]), "must-reject", "11.2.2#invalid-indexed", "zero-length PLTE in an indexed image", None)
-	c.emit("plte-empty-rgb", png(before=[pl(b"")]), "recover", "11.2.2#invalid-truecolour", "zero-length PLTE in a truecolour image")
+	c.emit("plte-empty-rgb", png(before=[pl(b"")]), "recover", "11.2.2#invalid-truecolour", "zero-length PLTE in a truecolor image")
 	p1 = TAGS["p1"]
 	extra = ((0, 0, 0), (255, 255, 255))
 	assert not set(extra) & set(entries(p1))
@@ -660,11 +660,11 @@ def plte(c: Corpus) -> None:
 		"1-bit indexed image with a 4-entry palette (p1's two entries, then black and white); only indices 0 and 1 are used", p1)
 	c.emit("plte-257-entries", image(P8, plte=pb + bytes(3 * (257 - len(entries(P8))))), "must-reject", "11.2.2#invalid-indexed",
 		f"771-byte PLTE: 257 entries (p8's {len(entries(P8))}, then black)", None)
-	c.emit("plte-in-gray", png(G8, before=[pl(pb)]), "may-reject", "11.2.2#forbidden", "PLTE in a greyscale image", G8)
-	c.emit("plte-in-graya", png(GA8, before=[pl(pb)]), "may-reject", "11.2.2#forbidden", "PLTE in a greyscale+alpha image", GA8)
+	c.emit("plte-in-gray", png(G8, before=[pl(pb)]), "may-reject", "11.2.2#forbidden", "PLTE in a grayscale image", G8)
+	c.emit("plte-in-graya", png(GA8, before=[pl(pb)]), "may-reject", "11.2.2#forbidden", "PLTE in a grayscale+alpha image", GA8)
 	c.emit("plte-after-idat-pal", png(P8, plte=[], after_idat=[pl(pb)]), "must-reject", "11.2.2#required", "indexed image whose PLTE follows IDAT", None)
-	c.emit("plte-after-idat-rgb", png(after_idat=[pl(pb)]), "recover", "11.2.2#invalid-truecolour", "truecolour image with a suggested palette after IDAT")
-	c.emit("plte-dup-rgb", png(before=[pl(pb), pl(pb[::-1])]), "may-reject", "11.2.2#single", "two suggested palettes in a truecolour image")
+	c.emit("plte-after-idat-rgb", png(after_idat=[pl(pb)]), "recover", "11.2.2#invalid-truecolour", "truecolor image with a suggested palette after IDAT")
+	c.emit("plte-dup-rgb", png(before=[pl(pb), pl(pb[::-1])]), "may-reject", "11.2.2#single", "two suggested palettes in a truecolor image")
 	c.emit("plte-crc-bad-rgb", png(before=[pl(pb, crc_value=1)]), "may-reject", "13.1#crc-critical", "bad CRC on an unused suggested palette")
 	c.emit("plte-crc-bad-pal", png(P8, plte=[pl(pb, crc_value=1)]), "may-reject", "13.1#crc-critical", "bad CRC on the palette of an indexed image", P8)
 	p2 = TAGS["p2"]
@@ -689,44 +689,44 @@ def plte(c: Corpus) -> None:
 def trns(c: Corpus) -> None:
 	tr = lambda body, **kw: B.chunk(b"tRNS", body, **kw)
 	p2 = TAGS["p2"]
-	grey = Counter(s for row in samples(G8) for s in row).most_common(2)
-	(g_a,), (g_b,) = grey[0][0], grey[1][0]
-	c.emit("trns-len-1-gray", png(G8, before=[tr(bytes([g_a]))]), "recover", "11.3.1.1#length", "1-byte tRNS on greyscale (should be 2)", G8)
-	c.emit("trns-len-3-gray", png(G8, before=[tr(bytes([0, g_a, 0]))]), "recover", "11.3.1.1#length", "3-byte tRNS on greyscale", G8)
-	c.emit("trns-len-4-rgb", png(before=[tr(bytes(4))]), "recover", "11.3.1.1#length", "4-byte tRNS on truecolour (should be 6)")
-	c.emit("trns-len-7-rgb", png(before=[tr(bytes(7))]), "recover", "11.3.1.1#length", "7-byte tRNS on truecolour")
+	gray = Counter(s for row in samples(G8) for s in row).most_common(2)
+	(g_a,), (g_b,) = gray[0][0], gray[1][0]
+	c.emit("trns-len-1-gray", png(G8, before=[tr(bytes([g_a]))]), "recover", "11.3.1.1#length", "1-byte tRNS on grayscale (should be 2)", G8)
+	c.emit("trns-len-3-gray", png(G8, before=[tr(bytes([0, g_a, 0]))]), "recover", "11.3.1.1#length", "3-byte tRNS on grayscale", G8)
+	c.emit("trns-len-4-rgb", png(before=[tr(bytes(4))]), "recover", "11.3.1.1#length", "4-byte tRNS on truecolor (should be 6)")
+	c.emit("trns-len-7-rgb", png(before=[tr(bytes(7))]), "recover", "11.3.1.1#length", "7-byte tRNS on truecolor")
 	c.emit("trns-len-0-pal", png(P8, after_plte=[tr(b"")]), "display", "11.3.1.1#partial-palette", "zero-length tRNS on an indexed image: every entry stays opaque", P8)
 	c.emit("trns-longer-than-plte", png(p2, after_plte=[tr(b"\x00\x40\x80\xc0\xff\xff")]), "recover", "11.3.1.1#length",
 		"6 alpha values for a 4-entry palette", p2)
 	c.emit("trns-in-graya", png(GA8, after_plte=[tr(b"\0\x80")]), "recover", "11.3.1.1#forbidden",
-		"tRNS in a greyscale+alpha image", GA8)
-	c.emit("trns-in-rgba", png(RGBA8, after_plte=[tr(b"\0\x80\0\x80\0\x80")]), "recover", "11.3.1.1#forbidden", "tRNS in a truecolour+alpha image", RGBA8)
+		"tRNS in a grayscale+alpha image", GA8)
+	c.emit("trns-in-rgba", png(RGBA8, after_plte=[tr(b"\0\x80\0\x80\0\x80")]), "recover", "11.3.1.1#forbidden", "tRNS in a truecolor+alpha image", RGBA8)
 	c.emit("trns-after-idat-gray", png(G8, after_idat=[tr(trns_for((g_a,)))]), "recover", "5.6#after-plte",
-		f"tRNS after IDAT on greyscale (value {g_a} is the commonest grey of the picture)", G8)
+		f"tRNS after IDAT on grayscale (value {g_a} is the commonest gray of the picture)", G8)
 	c.emit("trns-after-idat-pal", png(P8, after_idat=[tr(b"\0")]), "recover", "5.6#after-plte", "tRNS after IDAT on an indexed image", P8)
 	c.emit("trns-before-plte-pal", png(P8, before=[tr(b"\0")]), "recover", "5.6#after-plte", "tRNS before PLTE on an indexed image", P8)
 	c.emit("trns-before-plte-rgb", png(before=[tr(trns_for(samples(RGB8)[0][0])), B.chunk(b"PLTE", plte_body(P8))]), "recover", "5.6#after-plte",
-		"tRNS naming the top-left pixel's colour, then a suggested palette, on a truecolour image: tRNS is before PLTE", pixels(RGB8, trns=trns_for(samples(RGB8)[0][0])))
+		"tRNS naming the top-left pixel's color, then a suggested palette, on a truecolor image: tRNS is before PLTE", pixels(RGB8, trns=trns_for(samples(RGB8)[0][0])))
 	c.emit("trns-dup-gray", png(G8, before=[tr(trns_for((g_a,))), tr(trns_for((g_b,)))]), "recover", "5.6#single-ancillary",
-		f"two tRNS chunks naming the picture's two commonest greys, {g_a} and {g_b}; expected pixels: the first applied", pixels(G8, trns=trns_for((g_a,))))
+		f"two tRNS chunks naming the picture's two commonest grays, {g_a} and {g_b}; expected pixels: the first applied", pixels(G8, trns=trns_for((g_a,))))
 	g4, g1, g2 = TAGS["g4"], TAGS["g1"], TAGS["g2"]
 	(v4,) = mid(g4)
 	for name, v, value, masked, what in (
-			("trns-g4-highbits", g4, 0xF0 | v4, v4, f"4-bit grey, tRNS 0x{0xF0 | v4:04X}: masked to 0x{v4:X}"),
-			("trns-g4-highbyte", g4, 0x100 | v4, v4, f"4-bit grey, tRNS 0x{0x100 | v4:04X}: masked to 0x{v4:X}"),
-			("trns-g8-highbyte", G8, 0x100 | g_a, g_a, f"8-bit grey, tRNS 0x{0x100 | g_a:04X}: masked to 0x{g_a:02X}"),
-			("trns-g1-value-2", g1, 2, 0, "1-bit grey, tRNS 0x0002: masked to 0, so black is transparent (not 'nonzero means white')"),
-			("trns-g1-value-3", g1, 3, 1, "1-bit grey, tRNS 0x0003: masked to 1, white transparent"),
-			("trns-g2-value-5", g2, 5, 1, "2-bit grey, tRNS 5: masked to 1")):
+			("trns-g4-highbits", g4, 0xF0 | v4, v4, f"4-bit gray, tRNS 0x{0xF0 | v4:04X}: masked to 0x{v4:X}"),
+			("trns-g4-highbyte", g4, 0x100 | v4, v4, f"4-bit gray, tRNS 0x{0x100 | v4:04X}: masked to 0x{v4:X}"),
+			("trns-g8-highbyte", G8, 0x100 | g_a, g_a, f"8-bit gray, tRNS 0x{0x100 | g_a:04X}: masked to 0x{g_a:02X}"),
+			("trns-g1-value-2", g1, 2, 0, "1-bit gray, tRNS 0x0002: masked to 0, so black is transparent (not 'nonzero means white')"),
+			("trns-g1-value-3", g1, 3, 1, "1-bit gray, tRNS 0x0003: masked to 1, white transparent"),
+			("trns-g2-value-5", g2, 5, 1, "2-bit gray, tRNS 5: masked to 1")):
 		assert occurs(v, (masked,)), (name, masked)
 		c.emit(name, png(v, before=[tr(trns_for((value,)))]), "display", "11.3.1.1#mask", what, pixels(v, trns=trns_for((value,))))
 	(r0, g0, b0), = samples(crop(RGB8, 1, 1))[0]
 	body = trns_for((0x100 | r0, 0x100 | g0, 0x100 | b0))
 	c.emit("trns-rgb8-highbyte", png(before=[tr(body)]), "display", "11.3.1.1#mask",
-		"8-bit RGB, tRNS with a set high byte in each sample: masked, the top-left pixel's colour transparent", pixels(RGB8, trns=body))
-	for name, v, what in (("trns-rgb8-1x1", crop(RGB8, 1, 1), "1x1 truecolour with a tRNS naming its only pixel"),
-			("trns-rgb8-2x1", crop(RGB8, 2, 1), "2x1 truecolour with a tRNS naming its pixels' colour: fewer pixels than tRNS samples"),
-			("trns-rgb16-1x1", crop(RGB16, 1, 1), "1x1 16-bit truecolour with tRNS naming its pixel")):
+		"8-bit RGB, tRNS with a set high byte in each sample: masked, the top-left pixel's color transparent", pixels(RGB8, trns=body))
+	for name, v, what in (("trns-rgb8-1x1", crop(RGB8, 1, 1), "1x1 truecolor with a tRNS naming its only pixel"),
+			("trns-rgb8-2x1", crop(RGB8, 2, 1), "2x1 truecolor with a tRNS naming its pixels' color: fewer pixels than tRNS samples"),
+			("trns-rgb16-1x1", crop(RGB16, 1, 1), "1x1 16-bit truecolor with tRNS naming its pixel")):
 		body = trns_for(samples(v)[0][0])
 		want = pixels(v, trns=body)
 		assert all(p[3] == 0 for row in want for p in row)
@@ -740,7 +740,7 @@ def trns(c: Corpus) -> None:
 			assert occurs(v, value), (tag, which, value)
 			body = trns_for(value)
 			c.emit(f"trns-{tag}-{which}", png(v, before=[tr(body)]), "display", "11.3.1.1#applied",
-				f"tRNS names {which} ({', '.join(map(str, value))}), a colour of the picture: those pixels have alpha 0", pixels(v, trns=body))
+				f"tRNS names {which} ({', '.join(map(str, value))}), a color of the picture: those pixels have alpha 0", pixels(v, trns=body))
 	for v in (TAGS["g16"], TAGS["rgb16"]):
 		present = {s for row in samples(v) for s in row}
 		high = Counter(tuple(c >> 8 for c in s) for row in samples(v) for s in row).most_common(1)[0][0]
@@ -802,7 +802,7 @@ def chunks(c: Corpus) -> None:
 	c.emit("chunk-gama-crc-bad", png(before=[B.chunk(b"gAMA", GAMA, crc_value=1)]), "may-reject", "13.1#crc-ancillary", "bad CRC on gAMA")
 	(g_a,), _ = Counter(s for row in samples(G8) for s in row).most_common(1)[0]
 	c.emit("chunk-trns-crc-bad", png(G8, before=[B.chunk(b"tRNS", trns_for((g_a,)), crc_value=1)]), "may-reject", "13.1#crc-ancillary",
-		f"bad CRC on a tRNS naming grey {g_a}, a colour of the picture: dropped, it stays opaque; used, it turns transparent", G8)
+		f"bad CRC on a tRNS naming gray {g_a}, a color of the picture: dropped, it stays opaque; used, it turns transparent", G8)
 	c.emit("chunk-idat-crc-bad-first", png(idats=[B.chunk(b"IDAT", z[:8], crc_value=1), B.chunk(b"IDAT", z[8:])]), "may-reject", "13.1#crc-critical",
 		"bad CRC on the first of two IDATs, data intact")
 	c.emit("chunk-many-ancillary", png(before=[B.chunk(b"tEXt", f"k{i}\0v".encode()) for i in range(2000)]), "display", "11.3.3.2#text",
@@ -904,19 +904,19 @@ def ancillary(c: Corpus) -> None:
 		("itxt-bad-utf8", on(ch(b"iTXt", b"Comment\0\0\0en\0\xff\xfe\0\xc0\xc0")), "recover", "11.3.3.4#utf8", "iTXt whose text is not UTF-8", RGB8),
 		("itxt-language-numeric", on(ch(b"iTXt", b"Comment\0\0\0" + b"123" + b"\0\0text")), "recover", "11.3.3.4#language",
 			"iTXt with language tag 123, which is not a language tag", RGB8),
-		("sbit-len-wrong", on(ch(b"sBIT", b"\x04\x04\x04"), v=G8), "recover", "13.2#known-length", "sBIT with 3 bytes on greyscale (should be 1)", G8),
+		("sbit-len-wrong", on(ch(b"sBIT", b"\x04\x04\x04"), v=G8), "recover", "13.2#known-length", "sBIT with 3 bytes on grayscale (should be 1)", G8),
 		("sbit-value-0", on(ch(b"sBIT", bytes(3))), "recover", "11.3.2.4#range", "sBIT 0", RGB8),
 		("sbit-value-9", on(ch(b"sBIT", b"\x09\x09\x09")), "recover", "11.3.2.4#range", "sBIT 9 on an 8-bit image", RGB8),
 		("sbit-after-plte", pal(ch(b"sBIT", b"\x08\x08\x08")), "recover", "5.6#before-plte", "sBIT after PLTE", P8),
 		("sbit-rgb16-17", on(ch(b"sBIT", b"\x11\x11\x11"), v=RGB16), "recover", "11.3.2.4#range", "sBIT 17 on a 16-bit image", RGB16),
-		("bkgd-len-wrong-gray", on(ch(b"bKGD", b"\0"), v=G8), "recover", "13.2#known-length", "bKGD of 1 byte on greyscale (should be 2)", G8),
-		("bkgd-len-wrong-rgb", on(ch(b"bKGD", b"\0\0")), "recover", "13.2#known-length", "bKGD of 2 bytes on truecolour (should be 6)", RGB8),
+		("bkgd-len-wrong-gray", on(ch(b"bKGD", b"\0"), v=G8), "recover", "13.2#known-length", "bKGD of 1 byte on grayscale (should be 2)", G8),
+		("bkgd-len-wrong-rgb", on(ch(b"bKGD", b"\0\0")), "recover", "13.2#known-length", "bKGD of 2 bytes on truecolor (should be 6)", RGB8),
 		("bkgd-pal-index-beyond", pal(ch(b"bKGD", bytes([len(entries(P8))]))), "recover", "11.3.4.1#index",
 			f"bKGD index {len(entries(P8))} for a {len(entries(P8))}-entry palette", P8),
 		("bkgd-before-plte", pal(ch(b"bKGD", b"\x01"), before=True), "recover", "5.6#after-plte", "bKGD before PLTE", P8),
 		("bkgd-after-idat", after(ch(b"bKGD", b"\0\x80"), v=G8), "recover", "5.6#after-plte", "bKGD after IDAT", G8),
-		("bkgd-gray-highbyte", on(ch(b"bKGD", b"\x01\x80"), v=G8), "display", "11.3.4.1#mask", "bKGD 0x0180 on 8-bit greyscale", G8),
-		("bkgd-len-4", on(ch(b"bKGD", b"\0\x80\0\x80"), v=G8), "recover", "13.2#known-length", "bKGD of 4 bytes on greyscale (no colour type uses 4)", G8),
+		("bkgd-gray-highbyte", on(ch(b"bKGD", b"\x01\x80"), v=G8), "display", "11.3.4.1#mask", "bKGD 0x0180 on 8-bit grayscale", G8),
+		("bkgd-len-4", on(ch(b"bKGD", b"\0\x80\0\x80"), v=G8), "recover", "13.2#known-length", "bKGD of 4 bytes on grayscale (no color type uses 4)", G8),
 		("hist-len-wrong", pal(ch(b"hIST", b"\0\x01\0\x02")), "recover", "11.3.4.2#entries", f"hIST with 2 entries for a {len(entries(P8))}-entry palette", P8),
 		("hist-before-plte", pal(ch(b"hIST", b"\0\x01" * len(entries(P8))), before=True), "recover", "5.6#after-plte", "hIST before PLTE", P8),
 		("hist-without-plte", on(ch(b"hIST", b"\0\x01" * 4)), "recover", "11.3.4.2#entries", "hIST in an image with no palette", RGB8),
@@ -950,7 +950,7 @@ def ancillary(c: Corpus) -> None:
 			"eXIf whose first IFD offset points far outside the chunk", RGB8),
 		("exif-after-idat", after(ch(b"eXIf", b"II*\0\x08\0\0\0\0\0")), "recover", "5.6#before-idat", "eXIf after IDAT (table 7: before IDAT)", RGB8),
 		("cicp-len-3", on(ch(b"cICP", b"\x01\x0d\x00")), "recover", "13.2#known-length", "cICP with 3 bytes", RGB8),
-		("cicp-primaries-200", on(ch(b"cICP", b"\xc8\x0d\x00\x01")), "recover", "11.3.2.6#primaries", "cICP colour primaries 200, a code point H.273 reserves", RGB8),
+		("cicp-primaries-200", on(ch(b"cICP", b"\xc8\x0d\x00\x01")), "recover", "11.3.2.6#primaries", "cICP color primaries 200, a code point H.273 reserves", RGB8),
 		("cicp-transfer-200", on(ch(b"cICP", b"\x01\xc8\x00\x01")), "recover", "11.3.2.6#transfer", "cICP transfer characteristics 200, a code point H.273 reserves", RGB8),
 		("cicp-matrix-1", on(ch(b"cICP", b"\x01\x0d\x01\x01")), "recover", "11.3.2.6#matrix", "cICP matrix coefficients 1 (PNG requires 0)", RGB8),
 		("cicp-range-2", on(ch(b"cICP", b"\x01\x0d\x00\x02")), "recover", "11.3.2.6#full-range", "cICP video full range flag 2", RGB8),
@@ -1187,18 +1187,18 @@ def informational(c: Corpus) -> None:
 	top_left = lambda v: samples(v)[0][0]
 	bk = lambda *values: ch(b"bKGD", struct.pack(f">{len(values)}H", *values))
 	for name, v, body, what in (
-			("bkgd-g8", G8, bk(*commonest(G8)), f"the picture's commonest grey, {commonest(G8)[0]}"),
-			("bkgd-g16", TAGS["g16"], bk(*commonest(TAGS["g16"])), f"the picture's commonest grey, {commonest(TAGS['g16'])[0]}"),
-			("bkgd-rgb8", RGB8, bk(*top_left(RGB8)), f"the top-left pixel's colour {top_left(RGB8)}"),
-			("bkgd-rgb16", RGB16, bk(*top_left(RGB16)), f"the top-left pixel's colour {top_left(RGB16)}"),
+			("bkgd-g8", G8, bk(*commonest(G8)), f"the picture's commonest gray, {commonest(G8)[0]}"),
+			("bkgd-g16", TAGS["g16"], bk(*commonest(TAGS["g16"])), f"the picture's commonest gray, {commonest(TAGS['g16'])[0]}"),
+			("bkgd-rgb8", RGB8, bk(*top_left(RGB8)), f"the top-left pixel's color {top_left(RGB8)}"),
+			("bkgd-rgb16", RGB16, bk(*top_left(RGB16)), f"the top-left pixel's color {top_left(RGB16)}"),
 			("bkgd-p8", P8, ch(b"bKGD", b"\0"), "palette index 0"),
-			("bkgd-ga8", GA8, bk(commonest(GA8)[0]), f"grey {commonest(GA8)[0]}, the commonest grey"),
-			("bkgd-rgba8", RGBA8, bk(*top_left(RGBA8)[:3]), f"the top-left pixel's colour {top_left(RGBA8)[:3]}")):
+			("bkgd-ga8", GA8, bk(commonest(GA8)[0]), f"gray {commonest(GA8)[0]}, the commonest gray"),
+			("bkgd-rgba8", RGBA8, bk(*top_left(RGBA8)[:3]), f"the top-left pixel's color {top_left(RGBA8)[:3]}")):
 		c.emit(name, png(v, after_plte=[body]), "display", "11.3.4.1#bkgd",
 			f"{v.name} with bKGD {what}: a decoder must not composite onto it", v)
 	g_mid, rgb_mid = mid(G8), mid(RGB8)
 	for name, v, body, trns_body, what in (
-			("bkgd-trns-g8", G8, bk(*commonest(G8)), trns_for(g_mid), f"bKGD {commonest(G8)[0]}, tRNS grey {g_mid[0]}"),
+			("bkgd-trns-g8", G8, bk(*commonest(G8)), trns_for(g_mid), f"bKGD {commonest(G8)[0]}, tRNS gray {g_mid[0]}"),
 			("bkgd-trns-rgb8", RGB8, bk(*top_left(RGB8)), trns_for(rgb_mid), f"bKGD {top_left(RGB8)}, tRNS {rgb_mid}"),
 			("bkgd-trns-p8", P8, ch(b"bKGD", b"\0"), b"\0", "bKGD index 0, tRNS 00")):
 		c.emit(name, png(v, after_plte=[ch(b"tRNS", trns_body), body]), "display", "11.3.4.1#bkgd,11.3.1.1#applied",
@@ -1310,7 +1310,7 @@ def cgbi(c: Corpus) -> None:
 	c.emit("chunk-cgbi", B.assemble([B.chunk(b"CgBI", b"\x50\x00\x20\x02"), B.ihdr(v.width, v.height, 8, 6), B.chunk(b"IDAT", deflated), IEND]),
 		"must-reject", "11.2#ihdr-first",
 		"Apple CgBI as Xcode writes it: a CgBI chunk before IHDR, raw DEFLATE image data without zlib framing, "
-		"samples in BGRA order, colour premultiplied by alpha", None)
+		"samples in BGRA order, color premultiplied by alpha", None)
 
 
 # ---------------------------------------------------------------- signature, IEND, PLTE

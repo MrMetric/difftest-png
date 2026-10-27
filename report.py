@@ -18,7 +18,7 @@ from markdown_it import MarkdownIt
 
 REPO = "https://github.com/MrMetric/difftest-png"
 README = Path(__file__).with_name("README.md")
-# glyph per outcome; colour comes from severity
+# glyph per outcome; color comes from severity
 GLYPH = {"pixels": "✓", "reject": "R", "wrong": "≠", "accept": "A", "crash": "☠", "memory": "M",
 	"timeout": "⧗", "oom": "∞", "shim": "S"}
 OUTCOME_TEXT = {
@@ -170,7 +170,7 @@ def lens_td(per_lens: dict[str, tuple[str, str]], extra: str = "", kb: bool = Fa
 
 
 def lens_css(lenses: list[str]) -> str:
-	"""The lens switch: the checked radio #l<lens> selects which data-<lens> text and <class><lens> colour show."""
+	"""The lens switch: the checked radio #l<lens> selects which data-<lens> text and <class><lens> color show."""
 	out = []
 	for lens in lenses:
 		on = f"body:has(#l{lens}:checked)"
@@ -181,7 +181,7 @@ def lens_css(lenses: list[str]) -> str:
 
 
 def cell(r: dict, lenses: list[str], ratings: dict[str, str], kb: bool = False) -> str:
-	"""One matrix cell: under each lens, the outcome's glyph coloured by its severity (no class for a pass, the
+	"""One matrix cell: under each lens, the outcome's glyph colored by its severity (no class for a pass, the
 	column's default); a crash, hang or out-of-memory is `fatal`, and a memory error shows as M whatever the
 	pixels. The arguable marks are lens-independent."""
 	mark = marks(r, ratings) if "memory" not in r else ""
@@ -321,7 +321,7 @@ def bucket_label(b: dict, r: dict, ratings: dict[str, str]) -> str:
 	if mark:
 		text += " (arguable: " + "; ".join(TOPIC[t][1] for t, (m, _) in TOPIC.items() if m in mark) + ")"
 	if "alpha0" in tag:
-		text += f"; alpha-0 colour {tag['alpha0']}"
+		text += f"; color under alpha 0 {tag['alpha0']}"
 	if "16to8" in tag:
 		text += f"; 16→8 {tag['16to8']}"
 	return text
@@ -363,7 +363,7 @@ def legend() -> str:
 	rows = [f"<tr><td>{g}</td><td></td><td>{esc(OUTCOME_TEXT[k])}</td></tr>" for k, g in GLYPH.items()]
 	rows += [f"<tr><td>✓<sup>{m}</sup></td><td></td><td>{esc(t)} (arguable)</td></tr>" for m, t in TOPIC.values()]
 	rows += [f"<tr><td></td><td class={cls}>{cls}</td><td>{esc(text)}</td></tr>" for cls, text in SEVERITY_TEXT.items()]
-	return "<h2>Legend</h2><table class=legend><tr><th>glyph</th><th>colour</th><th>meaning</th></tr>" + "".join(rows) + "</table>"
+	return "<h2>Legend</h2><table class=legend><tr><th>glyph</th><th>color</th><th>meaning</th></tr>" + "".join(rows) + "</table>"
 
 
 def families(report: dict) -> list[str]:
@@ -372,7 +372,7 @@ def families(report: dict) -> list[str]:
 
 def feature_table(report: dict, groups: list[list[dict]]) -> str:
 	"""Per family and column group: n/m, the n of the family's m tests the group fails (must or should) under
-	the lens, coloured by the worst severity; a pass glyph when n is 0."""
+	the lens, colored by the worst severity; a pass glyph when n is 0."""
 	lenses = report["lenses"]
 	bounds = boundaries(groups)
 	out = [f"<h2>By family</h2><table class='m f' id=feat><thead>{head_rows(groups, 'family')}</thead><tbody>"]
@@ -391,10 +391,26 @@ def feature_table(report: dict, groups: list[list[dict]]) -> str:
 	return "".join(out) + "</tbody></table>"
 
 
+def alpha0_text(by_source: dict[str, dict[str, int]]) -> tuple[str, str]:
+	"""The color under fully transparent pixels, and the cell's class: one word when the column always does the same;
+	per source of the transparency when each source has one behavior; else each behavior with its count."""
+	values = {v for d in by_source.values() for v in d}
+	cls = " class=should" if "altered" in values else ""
+	if len(values) <= 1:
+		return ", ".join(values), cls
+	if all(len(d) == 1 for d in by_source.values()):
+		return "; ".join(f"{src}: {next(iter(d))}" for src, d in by_source.items()), cls
+	counts: dict[str, int] = {}
+	for d in by_source.values():
+		for v, n in d.items():
+			counts[v] = counts.get(v, 0) + n
+	return ", ".join(f"{v} {n}" for v, n in sorted(counts.items(), key=lambda x: -x[1])), cls
+
+
 def summary_table(report: dict, groups: list[list[dict]]) -> str:
 	lenses = report["lenses"]
 	heads = ("implementation", "version", "lineage", *(f"must: {SUMMARY[k]}" for k in SUMMARY if k != "should"), f"should: {SUMMARY['should']}",
-		"silent", "strict", "alpha-0 colour", "16→8")
+		"silent", "strict", "color under alpha 0", "16→8")
 	order = {i["name"]: n for n, i in enumerate(report["implementations"])}
 	out = ["<h2>Summary</h2><table class=s id=sum><thead><tr>" + "".join(f"<th>{h}</th>" for h in heads) + "</tr></thead><tbody>"]
 	for g in groups:
@@ -402,10 +418,9 @@ def summary_table(report: dict, groups: list[list[dict]]) -> str:
 		c = counts(report, g[0])
 		names = "<br>".join(esc(i["name"]) for i in g)
 		vers = "<br>".join(esc(i["revision"] or i["version"] or "") for i in g)
-		a0 = ", ".join(s.get("alpha0", []))
-		a0cls = " class=should" if "altered" in s.get("alpha0", []) else ""
+		a0, a0cls = alpha0_text(s.get("alpha0", {}))
 		cells = [lens_td({lens: ((k if k == "should" else "must") if c[lens][k] else "pass", str(c[lens][k])) for lens in lenses}) for k in SUMMARY]
-		# silent accepts of non-conforming files are shown, not judged: no severity colour
+		# silent accepts of non-conforming files are shown, not judged: no severity color
 		cells.append(lens_td({lens: ("", str(s[lens]["silent"])) for lens in lenses}))
 		sort = "".join(f" data-m{lens}={s[lens]['must']} data-s{lens}={s[lens]['should']}" for lens in lenses)
 		k = KINDS.index(kind(g[0]))
@@ -436,10 +451,10 @@ def render(report: dict) -> str:
 	out = [f"<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
 		f"<title>PNG decoder conformance, {date}</title><style>{CSS}{lens_css(lenses)}{thumb_css(report['images'], classes)}</style>"]
 	out.append(f"""<h1>PNG decoder conformance</h1>
-<p>Every decoder below was run over the same {len(tests)} small PNG files from <a href="{REPO}">difftest-png</a>, each one built to test one rule of the PNG specification or one behaviour on which some decoder deviates. Run {esc(report['generated'])} on {esc(report['host'])}.</p>
-<p>Each result is rated under each lens: <b>pass</b>, <b class=should>should</b> (the specification says a decoder should do otherwise, e.g. recover a recoverable fault instead of rejecting the image) or <b class=must>must</b> (a requirement is broken: wrong pixels, an invalid file accepted, a valid file rejected, a crash, a hang, a memory error). Warnings never count against a decoder. Running out of memory counts like a crash: a file should be rejected with an error, and a decoder that instead exhausts its host hands every program that opens untrusted images a denial of service. Pixels are compared as 16-bit RGBA with no colour management; colour under fully transparent pixels and the 8-bit reduction of 16-bit images are recorded as properties, not failures. Validators (pngcheck) are judged on a different question: whether each file conforms to the specification. Some files a decoder must still display do not conform, for example one with a chunk name the specification reserves.</p>
+<p>Every decoder below was run over the same {len(tests)} small PNG files from <a href="{REPO}">difftest-png</a>, each one built to test one rule of the PNG specification or one behavior on which some decoder deviates. Run {esc(report['generated'])} on {esc(report['host'])}.</p>
+<p>Each result is rated under each lens: <b>pass</b>, <b class=should>should</b> (the specification says a decoder should do otherwise, e.g. recover a recoverable fault instead of rejecting the image) or <b class=must>must</b> (a requirement is broken: wrong pixels, an invalid file accepted, a valid file rejected, a crash, a hang, a memory error). Warnings never count against a decoder. Running out of memory counts like a crash: a file should be rejected with an error, and a decoder that instead exhausts its host hands every program that opens untrusted images a denial of service. Pixels are compared as 16-bit RGBA with no color management; color under fully transparent pixels and the 8-bit reduction of 16-bit images are recorded as properties, not failures. Validators (pngcheck) are judged on a different question: whether each file conforms to the specification. Some files a decoder must still display do not conform, for example one with a chunk name the specification reserves.</p>
 <p>Two editions of the specification matter: the second (ISO/IEC 15948:2003; PNG 1.0 and 1.1 count as the second) and the third (W3C, 2025). A lens is an edition's text plus the extensions: the W3C registered extensions, Apple's iDOT, and under the second edition the chunks the third edition added (APNG, cICP, mDCV, cLLI, eXIf). Every result is rated through both lenses separately; the lens switch below chooses which one every table shows. There is no single verdict: following one edition rather than the other is not a defect. The two ratings differ only where the texts contradict each other, which they do in one place: a palette index past the end of PLTE is an error in the second edition and renders opaque black in the third.</p>
-<p>Not tested: animation frames after the default image, colour management (gAMA, cHRM, iCCP, sRGB, cICP, sBIT), encoders, performance. Passing every test means the suite is incomplete, not that the decoder is perfect.</p>""")
+<p>Not tested: animation frames after the default image, color management (gAMA, cHRM, iCCP, sRGB, cICP, sBIT), encoders, performance. Passing every test means the suite is incomplete, not that the decoder is perfect.</p>""")
 	if report["problems"]:
 		out.append("<p class=must>Suite consistency problems in this run:</p><ul>" + "".join(f"<li>{esc(p)}" for p in report["problems"]) + "</ul>")
 

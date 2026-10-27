@@ -327,11 +327,25 @@ def judge_test(impls: list[Impl], raw: dict[str, dict], reading: expect.Reading)
 	return out
 
 
-def summarize(results: dict[str, dict], conforms: dict[str, dict[str, bool]]) -> dict:
+SOURCES = ("alpha channel", "tRNS color key", "tRNS palette")  # where a file's transparency comes from (transparency_source)
+
+
+def transparency_source(reaches: list[str]) -> str:
+	"""SOURCES entry for a file, from the clauses the reference reaches on it: tRNS applied on an indexed image is a
+	palette's alpha, tRNS applied on a grayscale or truecolor image a color key, else the alpha channel."""
+	if "11.3.1.1#applied" not in reaches:
+		return SOURCES[0]
+	return SOURCES[2] if any(f"11.2.1#p{d}" in reaches for d in (1, 2, 4, 8)) else SOURCES[1]
+
+
+def summarize(results: dict[str, dict], conforms: dict[str, dict[str, bool]], source: dict[str, str]) -> dict:
 	"""Per lens, how many tests the column passes and fails, and on how many files that do not conform it
 	was silent (accepted them without a warning; no severity, an observation); the properties of its
-	matches; and per choice topic, how many tests it resolved with each option (the option every
-	interpretation it matched shares). `conforms`: test id -> lens -> whether the file conforms."""
+	matches: `alpha0` per source of the transparency (SOURCES) as behaviour -> count, since a decoder that expands
+	a tRNS color key itself may zero what it preserves under an alpha channel or a palette, and `16to8` as the
+	reductions seen; and per choice topic, how many tests it resolved with each option (the option every
+	interpretation it matched shares). `conforms`: test id -> lens -> whether the file conforms; `source`: test id ->
+	the source of its transparency."""
 	s: dict = {lens: {"must": 0, "should": 0, "pass": 0, "silent": 0} for lens in LENSES}
 	for tid, r in results.items():
 		for lens in LENSES:
@@ -340,10 +354,17 @@ def summarize(results: dict[str, dict], conforms: dict[str, dict[str, bool]]) ->
 			if outcome in ACCEPTED and not conforms[tid][lens] and not r.get("warning"):
 				s[lens]["silent"] += 1
 	labels = [r["label"] for r in results.values() if isinstance(r.get("label"), dict)]
-	for prop in ("alpha0", "16to8"):
-		seen = sorted({l[prop] for l in labels if prop in l})
-		if seen:
-			s[prop] = seen
+	alpha0: dict[str, dict[str, int]] = {}
+	for tid, r in results.items():
+		l = r.get("label")
+		if isinstance(l, dict) and "alpha0" in l:
+			by = alpha0.setdefault(source[tid], {})
+			by[l["alpha0"]] = by.get(l["alpha0"], 0) + 1
+	if alpha0:
+		s["alpha0"] = alpha0
+	seen = sorted({l["16to8"] for l in labels if "16to8" in l})
+	if seen:
+		s["16to8"] = seen
 	strict = sum(1 for r in results.values() if r.get("strict"))
 	if strict:
 		s["strict"] = strict
@@ -597,7 +618,7 @@ def _judge_and_report(args, tests: list[Test], avail: list[Impl], raw: dict, mem
 			"name": i.name, "project": i.project, "variant": i.variant, "lineage": i.lineage,
 			"version": version_of(i), "revision": i.revision, "notes": i.notes, "pixels": i.pixels,
 			"max_depth": i.max_depth, "memcheck": memcheck and i.memcheck,
-			"summary": summarize(results[i.name], {t["id"]: t["conforms"] for t in report_tests}),
+			"summary": summarize(results[i.name], {t["id"]: t["conforms"] for t in report_tests}, {t.id: transparency_source(t.reaches) for t in tests}),
 		} for i in avail],
 		"tests": report_tests,
 		"results": results,
