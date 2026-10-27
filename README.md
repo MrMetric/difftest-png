@@ -84,6 +84,8 @@ Apple's iDOT.
 - `note`: what `synth.py` says the file is.
 - `about`: the clauses `synth.py` says the file is about.
 - `family`: the part of the suite the file belongs to, as `synth.py` names it.
+- `explains`: pixels a decoder shows when it misreads the file in a way `synth.py` foresaw, as
+  `digest:text` items joined by `|`; the report labels an output with those pixels by the text.
 
 Every check in the reference names a clause of `spec/clauses.tsv` and quotes the sentence it
 enforces. After editing a file, `uv run expect.py` refreshes the manifest. It refuses to drop a

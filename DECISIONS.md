@@ -286,7 +286,10 @@ section linked. Those sentences are written once per clause in `spec/clauses.tsv
 words; the reference's own fault record stays in the JSON. After that come the expectation under
 each lens, links to the sections the clauses cite, and every output: the expected pixels, then
 each bucket of identical decoder outputs as a thumbnail with the columns that produced it. A
-wrong output is shown, not only counted.
+wrong output is shown, not only counted. Its label says how it differs from the expected pixels,
+and a difference needs no further comment to read as wrong. Where the generator knows a misreading
+that produces exactly those pixels, an invalid filter byte taken as filter None for instance, the
+label names the misreading instead.
 
 The summary splits must-violations by what went wrong: a valid file rejected, an invalid file
 accepted, wrong pixels, or a crash, hang, memory error or shim failure. A family table rolls the

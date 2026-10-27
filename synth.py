@@ -180,9 +180,21 @@ class Corpus:
 		self.contents: dict[bytes, str] = {}
 		self.family: str | None = None  # the SECTIONS name of the section emitting, set by main()
 
-	def emit(self, name: str, data: bytes, expect3: str, clause: str, note: str, pixels: Variant | list | None = RGB8) -> expect.Reading:
+	def digest_of(self, data: bytes) -> str:
+		"""The digest of the pixels a file the reference displays shows: its preferred interpretation's."""
+		tmp = self.scratch / "alt.png"
+		tmp.write_bytes(data)
+		r = expect.reading(tmp)
+		tmp.unlink()
+		assert r.interpretations and r.verdicts["3"].expectation == "display", "not a file the reference displays"
+		return pnglens.preferred(r.interpretations).digest
+
+	def emit(self, name: str, data: bytes, expect3: str, clause: str, note: str, pixels: Variant | list | None = RGB8,
+			explain: dict[str, bytes] | None = None) -> expect.Reading:
 		"""Check the file against the reference and write it. `clause`: comma-joined clause ids the case is about,
-		or "". `pixels`: a Variant (its rgba16()), RGBA16 rows, or None for a file without reference pixels."""
+		or "". `pixels`: a Variant (its rgba16()), RGBA16 rows, or None for a file without reference pixels. `explain`:
+		what a decoder did when its output is wrong but explicable, as text -> a valid file whose pixels it then shows;
+		the manifest's `explains` column carries each one as digest:text, and the report labels a matching bucket with it."""
 		assert NAME.fullmatch(name), f"{name}: not a [a-z0-9.-]+ name"
 		assert name not in self.names, f"{name}: duplicate"
 		assert data not in self.contents, f"{name}: the same bytes as {self.contents.get(data)}"
@@ -215,7 +227,14 @@ class Corpus:
 		path.write_bytes(data)
 		row = expect.row(r, path, self.out)
 		assert row["id"] == stem and row["expect3"] == expect3, (name, row["id"], row["expect3"])
-		kept = {"note": note, "about": clause, "family": self.family}
+		explains: dict[str, str] = {}
+		for text, alt in (explain or {}).items():
+			assert text and "|" not in text and "\t" not in text and "\n" not in text, (name, text)
+			digest = self.digest_of(alt)
+			assert digest not in {i.digest for i in r.interpretations}, f"{name}: explanation {text!r} is an interpretation of the file itself"
+			assert digest not in explains, f"{name}: explanations {text!r} and {explains[digest]!r} have the same pixels"
+			explains[digest] = text
+		kept = {"note": note, "about": clause, "family": self.family, "explains": "|".join(f"{d}:{t}" for d, t in explains.items())}
 		assert list(kept) == expect.KEPT
 		self.rows.append(row | kept)
 		self.names.add(name)
@@ -791,12 +810,19 @@ def chunks(c: Corpus) -> None:
 
 	r = raw(RGB8)
 	row = B.row_bytes(W, 2, 8) + 1
-	for name, data, what in (("filter-type-5-first-row", b"\x05" + r[1:], "filter type 5 on the first scanline"),
-			("filter-type-5-last-row", r[:-row] + b"\x05" + r[-row + 1:], "filter type 5 on the last scanline only"),
-			("filter-type-255", b"\xff" + r[1:], "filter type 255 on the first scanline"),
-			("filter-type-8", b"\x08" + r[1:], "filter type 8 (a decoder masking with 7 would read 0)")):
-		assert len(data) == len(r)
-		c.emit(name, zlib_png(zlib.compress(data, 6)), "must-reject", "9.2#filter-types", what, None)
+	for name, at, byte, what in (("filter-type-5-first-row", 0, 5, "filter type 5 on the first scanline"),
+			("filter-type-5-last-row", len(r) - row, 5, "filter type 5 on the last scanline only"),
+			("filter-type-255", 0, 255, "filter type 255 on the first scanline"),
+			("filter-type-8", 0, 8, "filter type 8 on the first scanline")):
+		def with_byte(b: int, at: int = at) -> bytes:
+			return zlib_png(zlib.compress(r[:at] + bytes([b]) + r[at + 1:], 6))
+		# A decoder that takes the invalid byte for a valid filter type reconstructs the scanline's stored bytes with it.
+		# On the first scanline Up reads as None and Paeth as Sub, since the scanline before it is all zeros.
+		by_pixels: dict[str, list[str]] = {}
+		for n, f in enumerate(B.FILTERS):
+			by_pixels.setdefault(c.digest_of(with_byte(n)), []).append(f.title())
+		c.emit(name, with_byte(byte), "must-reject", "9.2#filter-types", what, None,
+			explain={f"the invalid byte taken as filter {' or '.join(names)}": with_byte(B.FILTERS.index(names[0].lower())) for names in by_pixels.values()})
 
 
 # ---------------------------------------------------------------- ancillary chunks: content and position

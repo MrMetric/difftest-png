@@ -89,6 +89,7 @@ class Test:
 	note: str  # synth.py's account of the file
 	about: list[str]  # the clauses the case is about, as synth.py names them
 	family: str  # the generator section that wrote it
+	explains: dict[str, str]  # digest -> what a decoder whose output has those pixels did (synth.py's explanations)
 
 
 def load_impls(head: Path) -> list[Impl]:
@@ -131,6 +132,7 @@ def load_manifest(path: Path) -> list[Test]:
 				conforms={lens: {"yes": True, "no": False}[r[f"conforms{lens}"]] for lens in LENSES},
 				expectation={lens: r[f"expect{lens}"] for lens in LENSES}, strict=r["strict"],
 				description=r["description"], note=r["note"], about=[c for c in r["about"].split(",") if c], family=r["family"],
+				explains=dict(item.split(":", 1) for item in r["explains"].split("|") if item),
 			))
 			assert tests[-1].note and tests[-1].family, f"{r['id']}: no note or family (uv run synth.py)"
 	assert len({t.id for t in tests}) == len(tests), "duplicate test ids"
@@ -561,6 +563,9 @@ def _judge_and_report(args, tests: list[Test], avail: list[Impl], raw: dict, mem
 		for i in reading.interpretations:
 			if i.digest not in images:
 				images[i.digest] = thumbnail(i.rgba)
+		for b in buckets.values():
+			if b["digest"] in t.explains:
+				b["explanation"] = t.explains[b["digest"]]
 		for lens, name in REFERENCES.items():
 			ref, verdict = judged[name], reading.verdicts[lens]
 			outcome = ref["outcome"] if isinstance(ref["outcome"], str) else ref["outcome"][lens]
@@ -579,6 +584,7 @@ def _judge_and_report(args, tests: list[Test], avail: list[Impl], raw: dict, mem
 			"interpretations": {expect.choices_text(i.choices): i.digest for i in reading.interpretations},
 			"preferred": pnglens.preferred(reading.interpretations).digest if reading.interpretations else None,
 			"buckets": sorted(({"label": b["label"], "digest": b["digest"], "count": len(b["columns"]), "columns": b["columns"]}
+				| ({"explanation": b["explanation"]} if "explanation" in b else {})
 				for b in buckets.values()), key=lambda b: (-b["count"], b["digest"])),
 		})
 	report = {

@@ -54,7 +54,7 @@ th{font-weight:normal;text-align:left}
 .m td:first-child{text-align:left;padding:0 .4rem;color:inherit}
 .m thead th{position:sticky;top:0;background:#151515;vertical-align:bottom;padding:.3rem .1rem}
 .m thead th span{writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap}
-.m thead tr.kinds th{text-align:center;height:1.4rem;line-height:1.4rem;padding:0 .3rem;color:#999}
+.m thead tr.kinds th{text-align:center;height:1.4rem;line-height:1.4rem;padding:0 .2rem;color:#999;font-size:.8rem}
 .m thead tr:not(.kinds) th{top:1.4rem}
 .m .kb{border-left:3px solid #999}
 .s tr.kb>td{border-top:3px solid #999}
@@ -303,11 +303,14 @@ def thumb_css(images: dict, classes: dict[str, str]) -> str:
 
 
 def bucket_label(b: dict, r: dict, ratings: dict[str, str]) -> str:
-	"""Which interpretations a bucket matches, with the topics of an arguable rating and the match's properties;
-	`no interpretation` and how it differs when it matches none."""
+	"""Which interpretations a bucket matches, with the topics of an arguable rating and the match's properties. A
+	bucket that matches none is labelled with the generator's explanation of those pixels when it has one, else
+	with how they differ from the expected ones; a difference needs no further comment to read as wrong."""
 	tag = b["label"]
+	if "explanation" in b:
+		return b["explanation"]
 	if tag == "unexplained":
-		return f"no interpretation: {r['mismatch']}"
+		return r["mismatch"]
 	if tag == "unverifiable":
 		return "no reference pixels"
 	# `none` is the interpretation of a file with no open decision

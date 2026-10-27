@@ -29,6 +29,8 @@ A refresh keeps synth.py's columns (KEPT):
 - `about`: the clauses the case is about as synth.py names them (comma-joined ids, or empty); `clause`
   is the reference's first fault, which may differ.
 - `family`: the name of the generator section that wrote the file (synth.SECTIONS).
+- `explains`: `digest:text` items joined by `|`: pixels a decoder shows when it misreads the file in a way the
+  generator foresaw, and what that misreading is; the report labels a bucket with those pixels by the text.
 """
 import argparse
 import csv
@@ -46,7 +48,7 @@ from pngdiagnostics import Diagnostics
 
 ROOT = Path(__file__).resolve().parent
 FIELDS = ["id", "file", "clause", "reaches", "images", "conforms2", "expect2", "conforms3", "expect3", "strict", "description"]
-KEPT = ["note", "about", "family"]  # synth.py's columns, which a refresh keeps
+KEPT = ["note", "about", "family", "explains"]  # synth.py's columns, which a refresh keeps
 PREFIX = {"display": "y", "recover": "r", "may-reject": "i", "must-reject": "n"}
 assert set(PREFIX) == set(pnglens.STRENGTH)
 assert tuple(pnglens.LENSES) == ("2", "3"), "the manifest has one conforms and one expect column per lens"
