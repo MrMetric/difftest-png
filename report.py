@@ -22,10 +22,10 @@ README = Path(__file__).with_name("README.md")
 GLYPH = {"pixels": "✓", "reject": "R", "wrong": "≠", "accept": "A", "crash": "☠", "memory": "M",
 	"timeout": "⧗", "oom": "∞", "shim": "S"}
 OUTCOME_TEXT = {
-	"pixels": "decoded to the pixels of one of the reference's interpretations (validators: accepted)",
+	"pixels": "decoded to the pixels of one of the reference's interpretations; a validator: accepted a conforming file",
 	"reject": "rejected the file",
 	"wrong": "decoded to pixels no interpretation has",
-	"accept": "decoded a file the lens says to reject, or one with no reference pixels",
+	"accept": "decoded a file the lens says to reject, or one with no reference pixels; a validator: accepted a file that does not conform",
 	"crash": "crashed",
 	"memory": "memory error under valgrind memcheck",
 	"timeout": "timed out",
@@ -54,6 +54,10 @@ th{font-weight:normal;text-align:left}
 .m td:first-child{text-align:left;padding:0 .4rem;color:inherit}
 .m thead th{position:sticky;top:0;background:#151515;vertical-align:bottom;padding:.3rem .1rem}
 .m thead th span{writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap}
+.m thead tr.kinds th{text-align:center;height:1.4rem;line-height:1.4rem;padding:0 .3rem;color:#999}
+.m thead tr:not(.kinds) th{top:1.4rem}
+.m .kb{border-left:3px solid #999}
+.s tr.kb>td{border-top:3px solid #999}
 .f tbody th{white-space:nowrap}
 summary{cursor:pointer}
 #mx summary{display:flex;gap:.4rem;list-style:none}
@@ -85,18 +89,41 @@ def esc(s) -> str:
 	return html.escape(str(s), quote=True)
 
 
+KINDS = ("reference", "decoders", "validators")  # the kinds of column, in the order the tables show them
+
+
+def kind(impl: dict) -> str:
+	return "reference" if impl["project"] == "reference" else "decoders" if impl["pixels"] else "validators"
+
+
 def column_groups(report: dict) -> list[list[dict]]:
-	"""Variants of one project whose results agree on every test share a column."""
+	"""Variants of one project whose results agree on every test share a column. Columns come by kind (KINDS) and
+	alphabetically within it, where a reader expects a library to be."""
 	def key(impl):
 		rs = report["results"][impl["name"]]
 		return impl["project"], json.dumps({t: {k: v for k, v in r.items() if k != "detail"} for t, r in rs.items()}, sort_keys=True)
 	groups: dict[tuple, list[dict]] = {}
 	for impl in report["implementations"]:
 		groups.setdefault(key(impl), []).append(impl)
-	def order(g):
-		s = g[0]["summary"]["3"]
-		return s["must"], s["should"], g[0]["name"]
-	return sorted(groups.values(), key=order)
+	return sorted(groups.values(), key=lambda g: (KINDS.index(kind(g[0])), g[0]["name"]))
+
+
+def boundaries(groups: list[list[dict]]) -> set[int]:
+	"""The index of the first column group of each kind but the first: the tables draw a heavier border there."""
+	first: dict[str, int] = {}
+	for n, g in enumerate(groups):
+		first.setdefault(kind(g[0]), n)
+	return {n for n in first.values() if n > 0}
+
+
+def head_rows(groups: list[list[dict]], corner: str) -> str:
+	"""The two header rows of a matrix-shaped table: the kinds spanning their columns, then the names, rotated."""
+	counts = {k: sum(kind(g[0]) == k for g in groups) for k in KINDS}
+	kinds = "".join(f"<th colspan={counts[k]} data-k={n}{' class=kb' if n else ''}>{k}</th>" for n, k in enumerate(KINDS) if counts[k])
+	bounds = boundaries(groups)
+	names = "".join(f"<th{' class=kb' if n in bounds else ''} title='{esc(chr(10).join(label(i) for i in g))}'><span>{esc(' · '.join(i['name'] for i in g))}</span></th>"
+		for n, g in enumerate(groups))
+	return f"<tr class=kinds><th></th>{kinds}</tr><tr><th><span>{corner}</span></th>{names}</tr>"
 
 
 def label(impl: dict) -> str:
@@ -126,14 +153,16 @@ def outcome(r: dict, lens: str) -> str:
 	return r["outcome"] if isinstance(r["outcome"], str) else r["outcome"][lens]
 
 
-def lens_td(per_lens: dict[str, tuple[str, str]], extra: str = "") -> str:
+def lens_td(per_lens: dict[str, tuple[str, str]], extra: str = "", kb: bool = False) -> str:
 	"""A cell whose class and text depend on the lens: per_lens is lens -> (class, text). When the lenses agree the
 	text is plain; otherwise each lens's class carries its digit and its text sits in data-<lens>, which the
-	selected lens's CSS shows (lens_css()). `extra` is lens-independent HTML after the text."""
+	selected lens's CSS shows (lens_css()). `extra` is lens-independent HTML after the text; `kb` marks the first
+	column of a kind (boundaries())."""
 	if len(set(per_lens.values())) == 1:
 		cls, text = next(iter(per_lens.values()))
-		return f"<td{f' class={cls}' if cls else ''}>{esc(text)}{extra}</td>"
-	classes = " ".join(f"{cls}{lens}" for lens, (cls, _) in per_lens.items() if cls)
+		classes = " ".join(c for c in (cls, "kb" if kb else "") if c)
+		return f"<td{f' class={chr(39)}{classes}{chr(39)}' if classes else ''}>{esc(text)}{extra}</td>"
+	classes = " ".join([f"{cls}{lens}" for lens, (cls, _) in per_lens.items() if cls] + (["kb"] if kb else []))
 	data = "".join(f" data-{lens}='{esc(text)}'" for lens, (_, text) in per_lens.items())
 	return f"<td{f' class={chr(39)}{classes}{chr(39)}' if classes else ''}{data}>{extra}</td>"
 
@@ -149,20 +178,20 @@ def lens_css(lenses: list[str]) -> str:
 	return "".join(out)
 
 
-def cell(r: dict, lenses: list[str], ratings: dict[str, str]) -> str:
+def cell(r: dict, lenses: list[str], ratings: dict[str, str], kb: bool = False) -> str:
 	"""One matrix cell: under each lens, the outcome's glyph coloured by its severity (no class for a pass, the
 	column's default); a crash, hang or out-of-memory is `fatal`, and a memory error shows as M whatever the
 	pixels. The arguable marks are lens-independent."""
 	mark = marks(r, ratings) if "memory" not in r else ""
 	sup = f"<sup>{mark}</sup>" if mark else ""
 	if "memory" in r:
-		return f"<td class=fatal>{GLYPH['memory']}{sup}</td>"
+		return f"<td class='fatal{' kb' if kb else ''}'>{GLYPH['memory']}{sup}</td>"
 	per = {}
 	for lens in lenses:
 		o = outcome(r, lens)
 		cls = "fatal" if o in ("crash", "timeout", "oom") else r["severity"][lens]
 		per[lens] = ("" if cls == "pass" else cls, GLYPH[o])
-	return lens_td(per, sup)
+	return lens_td(per, sup, kb)
 
 
 def violation(test: dict, impl: dict, r: dict, lens: str) -> str | None:
@@ -174,7 +203,7 @@ def violation(test: dict, impl: dict, r: dict, lens: str) -> str | None:
 	- `fatal`: outcome crash, timeout, oom or shim, any E; or a memory error under valgrind, any outcome.
 	- `should` (recoverable file rejected): outcome reject with E recover.
 	A validator is judged on whether the file conforms: `rejected` is a reject of a conforming file that
-	carries no strict note, `accepted` an accept (outcome pixels) of a file that does not conform, and
+	carries no strict note, `accepted` an accept of a file that does not conform (outcome accept), and
 	`fatal` as for a decoder. Every must-violation is in exactly one of the first four."""
 	o, sev, e = outcome(r, lens), r["severity"][lens], test["expectation"][lens]
 	if "memory" in r or o in ("crash", "timeout", "oom", "shim"):
@@ -186,7 +215,7 @@ def violation(test: dict, impl: dict, r: dict, lens: str) -> str | None:
 		kind = {("reject", "display"): "rejected", ("reject", "recover"): "should", ("accept", "must-reject"): "accepted"}.get((o, e))
 		kind = kind or ("wrong" if o == "wrong" and e != "must-reject" else None)
 	else:
-		kind = {("reject", True): "rejected", ("pixels", False): "accepted"}.get((o, test["conforms"][lens]))
+		kind = {("reject", True): "rejected", ("accept", False): "accepted"}.get((o, test["conforms"][lens]))
 	assert kind and (sev == "should") == (kind == "should"), (test["id"], impl["name"], lens, o, sev, e)
 	return kind
 
@@ -336,22 +365,23 @@ def families(report: dict) -> list[str]:
 	return list(dict.fromkeys(t["family"] for t in report["tests"]))
 
 
-def feature_table(report: dict, groups: list[list[dict]], heads: str) -> str:
+def feature_table(report: dict, groups: list[list[dict]]) -> str:
 	"""Per family and column group: n/m, the n of the family's m tests the group fails (must or should) under
 	the lens, coloured by the worst severity; a pass glyph when n is 0."""
 	lenses = report["lenses"]
-	out = ["<h2>By family</h2><table class='m f' id=feat><thead><tr><th><span>family</span></th>" + heads + "</tr></thead><tbody>"]
+	bounds = boundaries(groups)
+	out = [f"<h2>By family</h2><table class='m f' id=feat><thead>{head_rows(groups, 'family')}</thead><tbody>"]
 	for fam in families(report):
 		tests = [t for t in report["tests"] if t["family"] == fam]
 		cells = []
-		for g in groups:
+		for col, g in enumerate(groups):
 			rs = report["results"][g[0]["name"]]
 			per = {}
 			for lens in lenses:
 				sev = [rs[t["id"]]["severity"][lens] for t in tests]
 				n = sum(s != "pass" for s in sev)
 				per[lens] = ("must" if "must" in sev else "should", f"{n}/{len(tests)}") if n else ("pass", "✓")
-			cells.append(lens_td(per))
+			cells.append(lens_td(per, kb=col in bounds))
 		out.append(f"<tr><th><span class=fam>{esc(fam)}</span></th>{''.join(cells)}</tr>")
 	return "".join(out) + "</tbody></table>"
 
@@ -373,7 +403,9 @@ def summary_table(report: dict, groups: list[list[dict]]) -> str:
 		# silent accepts of non-conforming files are shown, not judged: no severity colour
 		cells.append(lens_td({lens: ("", str(s[lens]["silent"])) for lens in lenses}))
 		sort = "".join(f" data-m{lens}={s[lens]['must']} data-s{lens}={s[lens]['should']}" for lens in lenses)
-		out.append(f"<tr{sort} data-o={order[g[0]['name']]}><td title='{esc(g[0]['notes'])}'>{names}</td><td>{vers}</td><td>{esc(g[0]['lineage'])}</td>"
+		k = KINDS.index(kind(g[0]))
+		kb = " class=kb" if g is next(h for h in groups if kind(h[0]) == kind(g[0])) and k else ""
+		out.append(f"<tr{kb}{sort} data-o={order[g[0]['name']]} data-k={k}><td title='{esc(g[0]['notes'])}'>{names}</td><td>{vers}</td><td>{esc(g[0]['lineage'])}</td>"
 			f"{''.join(cells)}<td>{s.get('strict', '')}</td><td{a0cls}>{esc(a0)}</td><td>{esc(', '.join(s.get('16to8', [])))}</td></tr>")
 	return "".join(out) + "</tbody></table>"
 
@@ -411,25 +443,25 @@ def render(report: dict) -> str:
 	out.append("<p class=lens>lens: " + " ".join(f"<label><input type=radio name=lens id=l{lens} value={lens}{' checked' if lens == '3' else ''}> {lens}</label>"
 		for lens in lenses) + "</p>")
 	out.append(legend())
-	heads = "".join(f"<th title='{esc(chr(10).join(label(i) for i in g))}'><span>{esc(' · '.join(i['name'] for i in g))}</span></th>" for g in groups)
-	out.append("<p class=js hidden><label>sort columns <select id=sort><option value=v>by violations<option value=n>by name"
+	bounds = boundaries(groups)
+	out.append("<p class=js hidden><label>sort columns <select id=sort><option value=n>by name<option value=v>by violations"
 		"<option value=o>in impls.toml order</select></label></p><details class=js hidden><summary>columns</summary>"
 		+ "".join(f"<label><input type=checkbox checked data-g={n}> {esc(' · '.join(i['name'] for i in g))}</label> " for n, g in enumerate(groups))
 		+ "</details>")
 	out.append(summary_table(report, groups))
-	out.append(feature_table(report, groups, heads))
+	out.append(feature_table(report, groups))
 	out.append("<h2 id=results>Results</h2><p><label><input type=checkbox id=f> show only tests some implementation fails</label></p>"
 		"<p class=js hidden><input id=q type=search placeholder='id, note or family'> "
 		+ " ".join(f"<label><input type=checkbox checked data-e={e}> {e}</label>" for e in report["expectations"][::-1])
 		+ " <select id=fam><option value=''>every family" + "".join(f"<option>{esc(f)}" for f in families(report)) + "</select></p>")
-	out.append(f"<table class=m id=mx><thead><tr><th><span>test</span></th>{heads}</tr></thead><tbody>")
+	out.append(f"<table class=m id=mx><thead>{head_rows(groups, 'test')}</thead><tbody>")
 	for t in tests:
 		rs = [report["results"][g[0]["name"]][t["id"]] for g in groups]
 		ok = "".join(f" ok{lens}" for lens in lenses if all(r["severity"][lens] == "pass" for r in rs)).strip()
 		data = "".join(f" data-e{lens}={t['expectation'][lens]}" for lens in lenses)
 		out.append(f"<tr{f' class={chr(39)}{ok}{chr(39)}' if ok else ''}{data} data-f='{esc(t['family'])}'><td><details><summary><span>{esc(t['id'])}</span>"
 			f"<a href='{REPO}/blob/HEAD/decode/{esc(t['file'])}'>png</a></summary>{expansion(t, report, classes)}</details></td>"
-			f"{''.join(cell(r, lenses, report['ratings']) for r in rs)}</tr>")
+			f"{''.join(cell(r, lenses, report['ratings'], n in bounds) for n, r in enumerate(rs))}</tr>")
 	out.append("</tbody></table>")
 	out.append(f"<script>{SCRIPT}</script>")
 	return "".join(out)
@@ -441,8 +473,9 @@ const byId = id => document.getElementById(id);
 for (const e of $(".js")) e.hidden = false;
 const lens = () => $("[name=lens]").find(e => e.checked).value;
 const sumRows = $("#sum tbody tr");
-const cellsOf = new Map([...$("#feat tr"), ...$("#mx tr")].map(r => [r, [...r.children].slice(1)]));
-const groups = sumRows.map((tr, i) => ({i, tr, name: tr.cells[0].firstChild.textContent, o: +tr.dataset.o}));
+const cellsOf = new Map([...$("#feat tr:not(.kinds)"), ...$("#mx tr:not(.kinds)")].map(r => [r, [...r.children].slice(1)]));
+const groups = sumRows.map((tr, i) => ({i, tr, name: tr.cells[0].firstChild.textContent, o: +tr.dataset.o, k: +tr.dataset.k}));
+const byTr = new Map(groups.map(g => [g.tr, g]));
 const cmp = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 const sortBy = byId("sort");
 function sort() {
@@ -452,15 +485,30 @@ function sort() {
 		n: (a, b) => cmp(a.name, b.name),
 		o: (a, b) => a.o - b.o,
 	}[sortBy.value];
-	const order = [...groups].sort(key);
+	const order = [...groups].sort((a, b) => a.k - b.k || key(a, b));
 	for (const g of order) g.tr.parentNode.append(g.tr);
 	for (const [r, cells] of cellsOf) for (const g of order) r.append(cells[g.i]);
+	bounds();
+}
+// The heavier border sits on the first visible column of each kind but the first; the kind headers span the visible columns.
+function bounds() {
+	const order = [...byId("sum").tBodies[0].rows].map(tr => byTr.get(tr)).filter(g => !g.tr.hidden);
+	const seen = new Set(), n = {};
+	for (const g of order) {
+		const on = !seen.has(g.k) && g.k > 0;
+		seen.add(g.k);
+		n[g.k] = (n[g.k] || 0) + 1;
+		g.tr.classList.toggle("kb", on);
+		for (const cells of cellsOf.values()) cells[g.i].classList.toggle("kb", on);
+	}
+	for (const th of $("tr.kinds th[data-k]")) { const c = n[th.dataset.k] || 0; th.colSpan = c || 1; th.hidden = !c; }
 }
 const picks = $("[data-g]");
 for (const c of picks) c.onchange = () => {
 	const g = groups[c.dataset.g];
 	g.tr.hidden = !c.checked;
 	for (const cells of cellsOf.values()) cells[g.i].hidden = !c.checked;
+	bounds();
 };
 const rows = $("#mx tbody tr");
 const text = rows.map(r => [r.querySelector("summary span"), r.querySelector(".note")].map(e => e.textContent).join(" ").concat(" ", r.dataset.f).toLowerCase());

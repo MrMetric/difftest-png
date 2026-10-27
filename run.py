@@ -256,7 +256,7 @@ def score(impl: Impl, verdict: str, lens: pnglens.Verdict, tag: dict | str | Non
 	assert verdict in ("accept", "reject"), verdict
 	if not impl.pixels:  # a validator is judged on whether the datastream conforms
 		if verdict == "accept":
-			return "pixels", "pass" if lens.conforms else "must", False
+			return ("pixels", "pass", False) if lens.conforms else ("accept", "must", False)
 		if not lens.conforms:
 			return "reject", "pass", False
 		return "reject", "pass" if lens.strict_notes else "must", bool(lens.strict_notes)

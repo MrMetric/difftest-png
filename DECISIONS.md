@@ -266,9 +266,12 @@ The report is one HTML file with everything inline, in a dark theme. It reads co
 JavaScript: the lens switch and the "only failing tests" filter are CSS. The script adds what CSS
 can't: sorting columns, hiding columns, and filtering rows by text, expectation class and family.
 
-Implementations are sorted by their number of must-violations, then should-violations, under the
-selected lens. There is no overall score, because choosing weights for one would be an editorial
-judgement. A decoder that passes every test only means the suite needs more tests.
+Columns come in three kinds, the reference, decoders and validators, with a heavier border
+between them, because a validator's accept and a decoder's correct pixels are different results
+and should not sit side by side looking alike. Within a kind the columns are alphabetical, where a
+reader looking for one library expects it; the page can re-sort them by violations. There is no
+overall score, because choosing weights for one would be an editorial judgement. A decoder that
+passes every test only means the suite needs more tests.
 
 In the matrix, each cell is a single coloured symbol, so the whole table can be taken in at a
 glance. Cells have no tooltips. Implementations with identical results share a column in the
