@@ -24,6 +24,15 @@ peak RSS, stdout and stderr.
   `ERR <message>` line on stdout, else the last non-empty stderr line.
 - A decoder that is a validator only (no pixels) sets `pixels = false` and is
   judged on exit status alone.
+- **One row at a time.** The shim holds at most one row of pixels and writes rows into the
+  output as the decoder produces them (`impls/pam_rows.h` does this for C shims). It never
+  allocates the image itself, so it has no memory need the decoder lacks. A decoder whose API
+  only hands over whole images allocates them itself, and that is its own result.
+- **An error after the rows is an error.** When the decoder reports an error after the last
+  row (a bad trailer, a checksum, an unknown critical chunk after IDAT), the shim exits
+  non-zero like for any other error. Whether the rows already decoded are usable is the
+  application's decision, which the shim does not make. The output may then hold the rows
+  written before the error; the harness ignores it when the exit status is non-zero.
 
 ## Optional stdout lines (one per line, before the final verdict)
 

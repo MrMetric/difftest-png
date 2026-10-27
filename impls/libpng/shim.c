@@ -4,28 +4,24 @@
  *   - transformations: png_set_expand only (palette->RGB, tRNS->alpha,
  *     gray<8 -> 8-bit, all spec-exact). No gamma, no background, no 16->8.
  *   - CRC handling, unknown-chunk handling, user limits: libpng defaults.
- *   - png_read_end IS called. An error raised after png_read_image completed
- *     (trailer problems) is reported as "WARN after image:" and the image is
- *     still written, so the harness can see "image complete, trailer bad".
+ *   - Rows are read one at a time with png_read_row and written out as they
+ *     arrive, so the shim holds one row and never the image: it has no memory
+ *     need libpng itself lacks. Interlace handling stays off; the shim reads
+ *     each pass's rows and places their pixels itself, the way libpng-manual.txt
+ *     describes with the PNG_PASS_* macros.
+ *   - png_read_end is called. An error libpng raises at any point, before or
+ *     after the rows, is reported as ERR and the shim exits 1. Whether an image
+ *     whose trailer is bad is still usable is the caller's decision, not the
+ *     shim's.
  *
  * stdout protocol: INFO ... / WARN ... lines, then "OK w h channels depth"
  * or "ERR message". Exit 0 only on OK.
  */
+#include "../pam_rows.h"
 #include <png.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
-
-/* Statics, not locals: they are written after setjmp and read after longjmp. */
-static png_structp png;
-static png_infop info;
-static volatile int image_done = 0;
-static png_uint_32 w, h;
-static int channels, odepth;
-static size_t rowbytes;
-static png_bytep buf;
-static png_bytep *rows;
 
 static void warn_fn(png_structp p, png_const_charp msg)
 {
@@ -35,15 +31,18 @@ static void warn_fn(png_structp p, png_const_charp msg)
 
 static void err_fn(png_structp p, png_const_charp msg)
 {
-	if (image_done)
-		printf("WARN after image: %s\n", msg);
-	else
-		printf("ERR %s\n", msg);
+	printf("ERR %s\n", msg);
 	fflush(stdout);
 	png_longjmp(p, 1);
 }
 
-static void report_chunks(void)
+static int fail(const char *msg)
+{
+	printf("ERR %s\n", msg);
+	return 1;
+}
+
+static void report_chunks(png_structp png, png_infop info)
 {
 	static const struct { png_uint_32 flag; const char *name; } known[] = {
 		{PNG_INFO_PLTE, "PLTE"}, {PNG_INFO_tRNS, "tRNS"}, {PNG_INFO_gAMA, "gAMA"},
@@ -80,73 +79,58 @@ int main(int argc, char **argv)
 		return 2;
 	}
 	FILE *in = fopen(argv[1], "rb");
-	if (!in) {
-		printf("ERR cannot open input\n");
-		return 1;
-	}
-	png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, err_fn, warn_fn);
-	info = png ? png_create_info_struct(png) : NULL;
-	if (!png || !info) {
-		printf("ERR png_create_*_struct failed\n");
-		return 1;
-	}
-	if (setjmp(png_jmpbuf(png))) {
-		if (!image_done)
-			return 1;
-		goto write_out;
-	}
+	if (!in)
+		return fail("cannot open input");
+	png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, err_fn, warn_fn);
+	png_infop info = png ? png_create_info_struct(png) : NULL;
+	if (!png || !info)
+		return fail("png_create_*_struct failed");
+	if (setjmp(png_jmpbuf(png)))
+		return 1; /* err_fn has reported libpng's error */
 	png_init_io(png, in);
 	png_read_info(png, info);
-	{
-		int depth, ctype, interlace, comp, filt;
-		png_get_IHDR(png, info, &w, &h, &depth, &ctype, &interlace, &comp, &filt);
-		printf("INFO ihdr width=%u height=%u bit_depth=%d color_type=%d interlace=%d\n",
-			(unsigned)w, (unsigned)h, depth, ctype, interlace);
-	}
-	report_chunks();
+	png_uint_32 w, h;
+	int depth, ctype, interlace, comp, filt;
+	png_get_IHDR(png, info, &w, &h, &depth, &ctype, &interlace, &comp, &filt);
+	printf("INFO ihdr width=%u height=%u bit_depth=%d color_type=%d interlace=%d\n",
+		(unsigned)w, (unsigned)h, depth, ctype, interlace);
+	report_chunks(png, info);
 
 	png_set_expand(png);
-	png_set_interlace_handling(png);
 	png_read_update_info(png, info);
-	channels = png_get_channels(png, info);
-	odepth = png_get_bit_depth(png, info);
-	rowbytes = png_get_rowbytes(png, info);
+	int channels = png_get_channels(png, info), odepth = png_get_bit_depth(png, info);
+	size_t rowbytes = png_get_rowbytes(png, info);
 	if (odepth != 8 && odepth != 16) {
 		printf("ERR unexpected output bit depth %d\n", odepth);
 		return 1;
 	}
-	if (h != 0 && rowbytes > SIZE_MAX / h) {
-		printf("ERR image too large for address space\n");
-		return 1;
+	struct pam_out out;
+	if (pam_open(&out, argv[2], w, h, channels, odepth == 16 ? 65535 : 255))
+		return fail("cannot open output");
+	png_bytep row = malloc(rowbytes), scratch = malloc(rowbytes);
+	if (!row || !scratch)
+		return fail("out of memory for one row");
+	if (interlace == PNG_INTERLACE_ADAM7) {
+		for (int pass = 0; pass < PNG_INTERLACE_ADAM7_PASSES; pass++) {
+			png_uint_32 cols = PNG_PASS_COLS(w, pass), rows = PNG_PASS_ROWS(h, pass);
+			if (cols == 0 || rows == 0)
+				continue; /* an empty pass has no rows in the datastream */
+			for (png_uint_32 y = 0; y < rows; y++) {
+				png_read_row(png, row, NULL);
+				if (pam_pass_row(&out, pass, y, row, cols, scratch))
+					return fail("cannot write output");
+			}
+		}
+	} else {
+		for (png_uint_32 y = 0; y < h; y++) {
+			png_read_row(png, row, NULL);
+			if (pam_row(&out, y, row))
+				return fail("cannot write output");
+		}
 	}
-	buf = malloc(rowbytes * h);
-	rows = malloc(sizeof(png_bytep) * h);
-	if (!buf || !rows) {
-		printf("ERR out of memory (%zu bytes)\n", rowbytes * h);
-		return 1;
-	}
-	for (png_uint_32 i = 0; i < h; i++)
-		rows[i] = buf + (size_t)i * rowbytes;
-	png_read_image(png, rows);
-	image_done = 1;
 	png_read_end(png, info);
-
-write_out:
-	{
-		FILE *out = fopen(argv[2], "wb");
-		if (!out) {
-			printf("ERR cannot open output\n");
-			return 1;
-		}
-		const char *tt = channels == 1 ? "GRAYSCALE" : channels == 2 ? "GRAYSCALE_ALPHA"
-			: channels == 3 ? "RGB" : "RGB_ALPHA";
-		fprintf(out, "P7\nWIDTH %u\nHEIGHT %u\nDEPTH %d\nMAXVAL %d\nTUPLTYPE %s\nENDHDR\n",
-			(unsigned)w, (unsigned)h, channels, odepth == 16 ? 65535 : 255, tt);
-		if (fwrite(buf, 1, rowbytes * h, out) != rowbytes * h || fclose(out) != 0) {
-			printf("ERR short write\n");
-			return 1;
-		}
-	}
+	if (pam_close(&out))
+		return fail("output incomplete");
 	printf("OK %u %u %d %d\n", (unsigned)w, (unsigned)h, channels, odepth);
 	return 0;
 }

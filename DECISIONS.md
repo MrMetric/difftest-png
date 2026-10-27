@@ -93,6 +93,12 @@ which AddressSanitizer misses.
 Each decoder is driven the way its documentation says to use it. If that still can't produce
 correct output, the report shows it as a `shim` failure.
 
+A shim measures the decoder, not itself. It holds one row and writes rows out as the decoder
+produces them, so it can't run out of memory where the decoder wouldn't. A decoder whose API
+only hands over whole images allocates them itself, and that is its own result. An error the
+decoder raises after the last row counts as an error like any other. Whether the rows already
+decoded are good enough is the application's decision, and the shim doesn't make it.
+
 Some differences are recorded without counting as failures. The colour under fully transparent
 pixels may be preserved, zeroed or changed to something else. The last case is the surprising
 one, and exactly what this kind of testing can catch. Decoders that only produce 8 bits may
