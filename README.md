@@ -20,7 +20,7 @@ My conclusion: [Parsing PNGs is a Minefield](https://seriot.ch/security/parsing_
 
 Shims with a build step are compiled first if their toolchain is present; any implementation
 whose program is missing is skipped with a notice. Results go to `out/report.json` and
-`out/report.html`. Options: `--no-memcheck` skips the valgrind pass, `--no-build` skips
+`out/report.html`; the page reads without JavaScript. Options: `--no-memcheck` skips the valgrind pass, `--no-build` skips
 compiling, `--jobs N`, `--out DIR`, `--head DIR` (see below). Every run is fresh; while
 iterating, `--reuse` takes stored results from earlier runs for every implementation except the
 reference decoder, and `--rerun IMPL ...` runs the named ones afresh (do that after rebuilding
@@ -82,6 +82,8 @@ Apple's iDOT.
 - The filename prefix summarises `expect3`: `y_` display, `r_` recover, `i_` may reject,
   `n_` must reject.
 - `note`: what `synth.py` says the file is.
+- `about`: the clauses `synth.py` says the file is about.
+- `family`: the part of the suite the file belongs to, as `synth.py` names it.
 
 Every check in the reference names a clause of `spec/clauses.tsv` and quotes the sentence it
 enforces. After editing a file, `uv run expect.py` refreshes the manifest. It refuses to drop a
@@ -109,7 +111,8 @@ skipped when it does not hold them. A script to clone and build them is not writ
 - `run.py` runs the suite and writes the report; `execute.py` runs one implementation on one
   file; `pam.py` reads their output; `report.py` renders the HTML
 - `refpng.py`, `pngfields.py`, `pngdiagnostics.py`, `inflate.py` the reference decoder;
-  `spec/clauses.tsv` the clauses it checks; `test_refpng.py` its regression tests
+  `spec/clauses.tsv` the clauses it checks, with a `says` column the report shows for each;
+  `spec/sections.tsv` the link of each section the clauses cite; `test_refpng.py` its regression tests
 - `pnglens.py` reads the reference's record through each lens, and with `--lens` is the decoder
   behind the `reference-2` and `reference-3` columns; `test_pnglens.py` its tests
 - `impls.toml`, `impls/` the implementations and the shim each one runs through

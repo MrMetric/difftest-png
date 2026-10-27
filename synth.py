@@ -3,8 +3,9 @@
 	uv run synth.py [DIR]       # DIR defaults to decode/
 
 Deletes every *.png in DIR, writes each case as DIR/<prefix>_<name>.png with the prefix of its expect3
-(expect.PREFIX), writes DIR/manifest.tsv (expect.row for each file, plus a `note` column saying what the
-file is), and prints the count. Every file shows the picture at 13x15 as 8-bit RGB, non-interlaced,
+(expect.PREFIX), writes DIR/manifest.tsv (expect.row for each file, plus expect.KEPT: a `note` column
+saying what the file is, `about` with the clauses the case names, and `family`, the SECTIONS name of the
+generator section that wrote it), and prints the count. Every file shows the picture at 13x15 as 8-bit RGB, non-interlaced,
 filter None, zlib level 6, unless the test is about one of those: then it uses the colour type, depth or
 size the test needs, and a smaller size is the picture's top-left crop. Files are as directly comparable
 as possible outside the trait being tested, so most decode to the identical image.
@@ -177,6 +178,7 @@ class Corpus:
 		self.names: set[str] = set()
 		self.files: set[str] = set()
 		self.contents: dict[bytes, str] = {}
+		self.family: str | None = None  # the SECTIONS name of the section emitting, set by main()
 
 	def emit(self, name: str, data: bytes, expect3: str, clause: str, note: str, pixels: Variant | list | None = RGB8) -> expect.Reading:
 		"""Check the file against the reference and write it. `clause`: comma-joined clause ids the case is about,
@@ -186,6 +188,7 @@ class Corpus:
 		assert data not in self.contents, f"{name}: the same bytes as {self.contents.get(data)}"
 		assert expect3 in pnglens.STRENGTH, (name, expect3)
 		assert note and "\t" not in note and "\n" not in note, (name, note)
+		assert self.family, f"{name}: emitted outside a SECTIONS entry"
 		stem = f"{expect.PREFIX[expect3]}_{name}"
 		assert stem not in self.files, f"{name}: {stem} is taken"
 		tmp = self.scratch / f"{stem}.png"
@@ -212,7 +215,9 @@ class Corpus:
 		path.write_bytes(data)
 		row = expect.row(r, path, self.out)
 		assert row["id"] == stem and row["expect3"] == expect3, (name, row["id"], row["expect3"])
-		self.rows.append(row | {"note": note})
+		kept = {"note": note, "about": clause, "family": self.family}
+		assert list(kept) == expect.KEPT
+		self.rows.append(row | kept)
 		self.names.add(name)
 		self.files.add(stem)
 		self.contents[data] = name
@@ -235,22 +240,20 @@ def filters(c: Corpus) -> None:
 			n = {k: s.get(k, 0) for k in B.STATS}
 			match fname:
 				case "none":
-					note = f"every scanline filter None: the plain {v.name} picture"
+					note = f"every scanline uses None: the plain {v.name} picture"
 				case "sub" | "up":
 					assert n["wrap"] > 0, (v.name, fname, n)
-					note = f"every scanline filter {fname.title()}; {n['wrap']} bytes are below their prediction (the subtraction wraps)"
+					note = f"every scanline uses {fname.title()}; the subtraction wraps in {n['wrap']} bytes"
 				case "average":
 					assert n["avg_odd"] > 0 and (n["avg_carry"] > 0 or not deep), (v.name, n)
-					note = f"every scanline filter Average; a + b is odd at {n['avg_odd']} bytes and exceeds 255 at {n['avg_carry']}"
+					note = f"every scanline uses Average; a + b is odd in {n['avg_odd']} bytes and exceeds 255 in {n['avg_carry']}"
 				case "paeth":
 					assert n["paeth_a"] > 0 and n["paeth_b"] > 0 and (n["paeth_c"] > 0 or not deep), (v.name, n)
 					assert (n["paeth_tie"] > 0) == (v.name not in NO_DECIDING_TIE), (v.name, n)
-					note = (f"every scanline filter Paeth; the predictor is a at {n['paeth_a']} bytes, b at {n['paeth_b']}, "
-						f"c at {n['paeth_c']}, and the tie order decides {n['paeth_tie']}")
+					note = (f"every scanline uses Paeth; the predictor is a in {n['paeth_a']} bytes, b in {n['paeth_b']}, "
+						f"c in {n['paeth_c']}, and {n['paeth_tie']} ties go by comparison order")
 				case _:
 					raise AssertionError(fname)
-			if fname != "none":
-				note += "; the first scanline sees a zero previous scanline"
 			r = c.emit(f"filter-{fname}-{v.name}", data, "display", f"9.2#filter-{fname}", note, v)
 			reached = r.diagnostics.reached
 			# The reference's own coverage must agree with what the encoder counted.
@@ -263,7 +266,7 @@ def filters(c: Corpus) -> None:
 		random.Random(name).shuffle(order)
 		assert len(order) == v.height
 		c.emit(name, image(v, filter_for=lambda p, y, o=order: o[y]), "display", ",".join(f"9.2#filter-{f}" for f in B.FILTERS),
-			f"filter type per scanline, each type on three scanlines in a seeded random order: {''.join(map(str, order))}", v)
+			"each filter type on three scanlines, in a seeded random order", v)
 		t = crop(v, 1, 1)
 		c.emit(f"tiny-1x1-{v.name}", image(t, filter_for=lambda p, y: 4), "display", f"11.2.1#{v.name}",
 			"the picture's top-left pixel alone, Paeth filtered", t)
@@ -288,6 +291,15 @@ def empty_passes(w: int, h: int) -> tuple[list[int], list[str]]:
 	return empty, list(dict.fromkeys(clauses))
 
 
+def empty_text(empty: list[int]) -> str:
+	"""How a note names the Adam7 passes with no scanline."""
+	if not empty:
+		return "no pass is empty"
+	if len(empty) == 1:
+		return f"pass {empty[0]} is empty"
+	return f"passes {', '.join(map(str, empty))} are empty"
+
+
 def adam7(c: Corpus) -> None:
 	assert empty_passes(picture.W, picture.H) == ([], []) and all(min(B.pass_size(picture.W, picture.H, p)) >= 2 for p in range(7))
 	for v in VARIANTS.values():
@@ -297,13 +309,13 @@ def adam7(c: Corpus) -> None:
 			rng = random.Random(name)
 			empty, clauses = empty_passes(t.width, t.height)
 			c.emit(name, image(t, interlace=1, filter_for=lambda p, y: rng.randrange(5)), "display", ",".join(["8.1#adam7"] + clauses),
-				f"{t.width}x{t.height}, random filter per scanline; empty passes: {', '.join(map(str, empty)) or 'none'}", t)
+				f"{t.width}x{t.height}, interlaced, random filter per scanline; {empty_text(empty)}", t)
 	for size in [None] + list(ADAM7_CROPS):
 		t = G8 if size is None else crop(G8, *size)
 		name = "adam7-g8-nofilter" if size is None else f"adam7-{t.width}x{t.height}-g8-nofilter"
 		empty, clauses = empty_passes(t.width, t.height)
 		c.emit(name, image(t, interlace=1), "display", ",".join(["8.1#adam7"] + clauses),
-			f"{t.width}x{t.height}, filter None throughout: the pass layout alone; empty passes: {', '.join(map(str, empty)) or 'none'}", t)
+			f"{t.width}x{t.height}, interlaced, filter None throughout; {empty_text(empty)}", t)
 
 
 # ---------------------------------------------------------------- 7.2 packing
@@ -313,7 +325,7 @@ def packing(c: Corpus) -> None:
 		v = TAGS[tag]
 		assert v.width * v.bit_depth % 8, tag
 		c.emit(f"padbits-{tag}", image(v, pad_bits=1, filter_for=lambda p, y: 1), "display", "7.2#padding-unspecified",
-			f"{8 - v.width * v.bit_depth % 8} unused bits at the end of every scanline set to 1, Sub filter so they feed the filter", v)
+			f"the {8 - v.width * v.bit_depth % 8} unused bits at the end of every scanline set to 1; Sub filter, so they feed the filter", v)
 	g1 = TAGS["g1"]
 	assert all(B.pass_size(g1.width, g1.height, p)[0] % 8 for p in range(7)), "every pass pads"
 	c.emit("padbits-g1-adam7", image(g1, pad_bits=1, interlace=1, filter_for=lambda p, y: 4), "display", "8.1#adam7,7.2#padding-unspecified",
@@ -331,22 +343,22 @@ def structure(c: Corpus) -> None:
 	c.emit("idat-empty-last", png(idats=[idat(z), idat(b"")]), "display", "10.2#idat-empty", "zero-length IDAT after the data")
 	c.emit("idat-empty-middle", png(idats=[idat(z[:5]), idat(b""), idat(z[5:])]), "display", "10.2#idat-empty", "zero-length IDAT between two halves")
 	c.emit("idat-split-every-byte", png(idats=[idat(z[i:i + 1]) for i in range(len(z))]), "display", "10.2#idat-boundaries",
-		f"one byte per IDAT, {len(z)} IDAT chunks (8-bit RGB; PngSuite oi9 is 16-bit)")
+		f"one byte per IDAT, {len(z)} IDAT chunks")
 	for v16 in (TAGS["g16"], TAGS["rgb16"]):
 		z16 = zdata(v16)
 		c.emit(f"idat-split-every-byte-{v16.name}", png(v16, idats=[idat(z16[i:i + 1]) for i in range(len(z16))]), "display", "10.2#idat-boundaries",
-			f"one byte per IDAT on a 16-bit image, {len(z16)} IDAT chunks (PngSuite oi9)", v16)
+			f"one byte per IDAT on a 16-bit image, {len(z16)} IDAT chunks", v16)
 	c.emit("idat-split-in-zlib-header", png(idats=[idat(z[:1]), idat(z[1:])]), "display", "10.2#split-zlib-header", "IDAT boundary between the two zlib header bytes")
 	c.emit("idat-split-in-adler", png(idats=[idat(z[:-2]), idat(z[-2:])]), "display", "10.2#split-adler32", "IDAT boundary inside the Adler-32")
 	c.emit("idat-interrupted-by-text", png(idats=[idat(z[:8]), B.chunk(b"tEXt", b"k\0v"), idat(z[8:])]), "must-reject", "11.2.3#consecutive",
-		"tEXt between two IDATs: IDATs shall be consecutive")
+		"tEXt between two IDATs")
 	c.emit("idat-interrupted-by-unknown", png(idats=[idat(z[:8]), B.chunk(b"juNk", bytes(4)), idat(z[8:])]), "must-reject", "11.2.3#consecutive",
 		"unknown ancillary chunk between two IDATs")
-	c.emit("idat-after-iend", png(trailer=idat(z)), "recover", "11.2#iend-last", "a second IDAT after IEND: data after IEND")
+	c.emit("idat-after-iend", png(trailer=idat(z)), "recover", "11.2#iend-last", "a complete image, then a second IDAT after IEND")
 	c.emit("idat-second-stream", png(idats=[idat(z), idat(z)]), "recover", "11.2.3#trailing-bytes",
-		"a second complete zlib stream in a further IDAT (Pillow's hopper_idat_after_image_end)")
+		"a second complete zlib stream in a further IDAT")
 	c.emit("idat-trailing-junk", zlib_png(z + b"\x5a\xa5\x00\xff" * 4), "recover", "11.2.3#trailing-bytes",
-		"16 unused bytes after the zlib stream in the final IDAT: decoder should ignore")
+		"16 unused bytes after the zlib stream in the final IDAT")
 	c.emit("idat-trailing-zeros", zlib_png(z + bytes(64)), "recover", "11.2.3#trailing-bytes", "64 zero bytes after the zlib stream")
 	c.emit("zlib-extra-row", zlib_png(zlib.compress(raw0 + raw0[:row], 6)), "may-reject", "13.1#data-long",
 		"decompressed data one scanline longer than the image")
@@ -360,7 +372,7 @@ def structure(c: Corpus) -> None:
 		"a complete IDAT, then the length and type of a second one and nothing more: the image is whole, the datastream is not")
 	c.emit("zlib-bad-adler", zlib_png(z[:-4] + bytes(4)), "must-reject", "rfc1950-2.3#adler32", "Adler-32 wrong, deflate data intact")
 	c.emit("zlib-bad-adler-own-idat", png(idats=[idat(z[:-4]), idat(bytes(4))]), "must-reject", "rfc1950-2.3#adler32",
-		"Adler-32 wrong and in its own IDAT after the data: a decoder that has every row before it reads the chunk may never check it (libpng only warns here)")
+		"Adler-32 wrong, in its own IDAT after the data: a decoder that has every row before it reads the chunk may never check it")
 	co = zlib.compressobj(6)
 	c.emit("zlib-no-final-block", zlib_png(co.compress(raw0) + co.flush(zlib.Z_SYNC_FLUSH)), "may-reject", "10.1#zlib-check,rfc1951-3.2.3#end-of-input",
 		"all data in non-final blocks, then the stream stops (no BFINAL, no Adler-32)")
@@ -493,7 +505,7 @@ def deflate(c: Corpus) -> None:
 	# RFC 1951 3.2.7: HLIT is 257..286 and HDIST 1..32, so symbols 286/287 can never have a code in a dynamic block,
 	# but distance codes 30 and 31 can (zlib refuses more than 30 unless built with PKZIP_BUG_WORKAROUND).
 	# 32 codes of length 5, or 30 of length 5 and code 30 of length 4: both complete trees.
-	for n, lengths, unused in ((32, {s: 5 for s in range(32)}, "distance codes 30 and 31 given lengths but never used; RFC-legal, refused by zlib without PKZIP_BUG_WORKAROUND"),
+	for n, lengths, unused in ((32, {s: 5 for s in range(32)}, "distance codes 30 and 31 given lengths but never used"),
 			(31, {s: 5 for s in range(30)} | {30: 4}, "distance code 30 given a length (4, so the tree is complete) but never used")):
 		w = D.BitWriter()
 		D.dynamic_block(w, [("lit", b) for b in r], True, dist_lengths=lengths)
@@ -605,7 +617,7 @@ def ihdr(c: Corpus) -> None:
 	c.emit("ihdr-not-first", B.assemble([B.chunk(b"tEXt", b"k\0v"), B.ihdr(W, H, 8, 2), B.chunk(b"IDAT", z), IEND]), "must-reject", "11.2#ihdr-first",
 		"a tEXt chunk precedes IHDR")
 	c.emit("ihdr-not-first-unknown", B.assemble([B.chunk(b"prIv", bytes(4)), B.ihdr(W, H, 8, 2), B.chunk(b"IDAT", z), IEND]), "must-reject", "11.2#ihdr-first",
-		"an unknown ancillary private chunk precedes IHDR (libpng checks for IHDR only when a known chunk arrives)")
+		"an unknown ancillary private chunk precedes IHDR")
 	c.emit("ihdr-dup", png(before=[B.ihdr(W, H, 8, 2)]), "must-reject", "11.2#one-ihdr", "two identical IHDR chunks")
 	c.emit("ihdr-dup-different", png(before=[B.ihdr(2, 2, 8, 2)]), "must-reject", "11.2#one-ihdr", "a second IHDR giving 2x2")
 	c.emit("ihdr-missing", B.assemble([B.chunk(b"IDAT", z), IEND]), "must-reject", "11.2#ihdr-first", "no IHDR at all", None)
@@ -619,7 +631,7 @@ def plte(c: Corpus) -> None:
 	c.emit("plte-len-not-mult3-pal", png(P8, plte=[pl(pb + b"\x80")]), "must-reject", "11.2.2#invalid-indexed",
 		f"palette length {len(pb) + 1} in an indexed image", None)
 	c.emit("plte-len-not-mult3-rgb", png(before=[pl(pb + b"\x80")]), "recover", "11.2.2#invalid-truecolour",
-		f"palette length {len(pb) + 1} in a truecolour image (suggested palette; 13.1 says an invalid PLTE in a truecolour image can be ignored)")
+		f"palette length {len(pb) + 1} in a truecolour image, a suggested palette")
 	c.emit("plte-empty-pal", png(P8, plte=[pl(b"")]), "must-reject", "11.2.2#invalid-indexed", "zero-length PLTE in an indexed image", None)
 	c.emit("plte-empty-rgb", png(before=[pl(b"")]), "recover", "11.2.2#invalid-truecolour", "zero-length PLTE in a truecolour image")
 	p1 = TAGS["p1"]
@@ -629,7 +641,7 @@ def plte(c: Corpus) -> None:
 		"1-bit indexed image with a 4-entry palette (p1's two entries, then black and white); only indices 0 and 1 are used", p1)
 	c.emit("plte-257-entries", image(P8, plte=pb + bytes(3 * (257 - len(entries(P8))))), "must-reject", "11.2.2#invalid-indexed",
 		f"771-byte PLTE: 257 entries (p8's {len(entries(P8))}, then black)", None)
-	c.emit("plte-in-gray", png(G8, before=[pl(pb)]), "may-reject", "11.2.2#forbidden", "PLTE in a greyscale image, which shall not appear; pixels do not depend on it", G8)
+	c.emit("plte-in-gray", png(G8, before=[pl(pb)]), "may-reject", "11.2.2#forbidden", "PLTE in a greyscale image", G8)
 	c.emit("plte-in-graya", png(GA8, before=[pl(pb)]), "may-reject", "11.2.2#forbidden", "PLTE in a greyscale+alpha image", GA8)
 	c.emit("plte-after-idat-pal", png(P8, plte=[], after_idat=[pl(pb)]), "must-reject", "11.2.2#required", "indexed image whose PLTE follows IDAT", None)
 	c.emit("plte-after-idat-rgb", png(after_idat=[pl(pb)]), "recover", "11.2.2#invalid-truecolour", "truecolour image with a suggested palette after IDAT")
@@ -642,14 +654,14 @@ def plte(c: Corpus) -> None:
 	assert n3, "p2 uses index 3"
 	for name, trns, what in (("plte-index-beyond-2bit", None, ""), ("plte-index-beyond-2bit-trns", b"\x80\xff", "; tRNS 80 ff, and the out-of-range pixels stay opaque")):
 		c.emit(name, image(p2, plte=bytes(s for e in cut for s in e), trns=trns), "recover", "13.1#index-opaque-black",
-			f"p2 with its PLTE cut to three entries: the {n3} index-3 pixels must render opaque black (13.1){what}", pixels(p2, trns=trns, palette=cut))
+			f"p2 with its PLTE cut to three entries: {n3} pixels use index 3{what}", pixels(p2, trns=trns, palette=cut))
 	for tag, keep in (("p1", 1), ("p4", 15), ("p8", 35)):
 		v = TAGS[tag]
 		cut = entries(v)[:keep]
 		n = sum(i >= keep for (i,) in (s for row in samples(v) for s in row))
 		assert n, (tag, keep)
 		c.emit(f"plte-index-beyond-{v.bit_depth}bit", image(v, plte=bytes(s for e in cut for s in e)), "recover", "13.1#index-opaque-black",
-			f"{tag} with its PLTE cut to {keep} of {len(entries(v))} entries: the {n} pixels with an index past it must render opaque black (13.1)",
+			f"{tag} with its PLTE cut to {keep} of {len(entries(v))} entries: {n} pixels use an index past it",
 			pixels(v, palette=cut))
 
 
@@ -666,9 +678,9 @@ def trns(c: Corpus) -> None:
 	c.emit("trns-len-7-rgb", png(before=[tr(bytes(7))]), "recover", "11.3.1.1#length", "7-byte tRNS on truecolour")
 	c.emit("trns-len-0-pal", png(P8, after_plte=[tr(b"")]), "display", "11.3.1.1#partial-palette", "zero-length tRNS on an indexed image: every entry stays opaque", P8)
 	c.emit("trns-longer-than-plte", png(p2, after_plte=[tr(b"\x00\x40\x80\xc0\xff\xff")]), "recover", "11.3.1.1#length",
-		"6 alpha values for a 4-entry palette: shall not", p2)
+		"6 alpha values for a 4-entry palette", p2)
 	c.emit("trns-in-graya", png(GA8, after_plte=[tr(b"\0\x80")]), "recover", "11.3.1.1#forbidden",
-		"tRNS in a greyscale+alpha image: shall not appear; pixels have their own alpha", GA8)
+		"tRNS in a greyscale+alpha image", GA8)
 	c.emit("trns-in-rgba", png(RGBA8, after_plte=[tr(b"\0\x80\0\x80\0\x80")]), "recover", "11.3.1.1#forbidden", "tRNS in a truecolour+alpha image", RGBA8)
 	c.emit("trns-after-idat-gray", png(G8, after_idat=[tr(trns_for((g_a,)))]), "recover", "5.6#after-plte",
 		f"tRNS after IDAT on greyscale (value {g_a} is the commonest grey of the picture)", G8)
@@ -681,7 +693,7 @@ def trns(c: Corpus) -> None:
 	g4, g1, g2 = TAGS["g4"], TAGS["g1"], TAGS["g2"]
 	(v4,) = mid(g4)
 	for name, v, value, masked, what in (
-			("trns-g4-highbits", g4, 0xF0 | v4, v4, f"4-bit grey, tRNS 0x{0xF0 | v4:04X}: decoders must mask to 0x{v4:X}"),
+			("trns-g4-highbits", g4, 0xF0 | v4, v4, f"4-bit grey, tRNS 0x{0xF0 | v4:04X}: masked to 0x{v4:X}"),
 			("trns-g4-highbyte", g4, 0x100 | v4, v4, f"4-bit grey, tRNS 0x{0x100 | v4:04X}: masked to 0x{v4:X}"),
 			("trns-g8-highbyte", G8, 0x100 | g_a, g_a, f"8-bit grey, tRNS 0x{0x100 | g_a:04X}: masked to 0x{g_a:02X}"),
 			("trns-g1-value-2", g1, 2, 0, "1-bit grey, tRNS 0x0002: masked to 0, so black is transparent (not 'nonzero means white')"),
@@ -693,7 +705,7 @@ def trns(c: Corpus) -> None:
 	body = trns_for((0x100 | r0, 0x100 | g0, 0x100 | b0))
 	c.emit("trns-rgb8-highbyte", png(before=[tr(body)]), "display", "11.3.1.1#mask",
 		"8-bit RGB, tRNS with a set high byte in each sample: masked, the top-left pixel's colour transparent", pixels(RGB8, trns=body))
-	for name, v, what in (("trns-rgb8-1x1", crop(RGB8, 1, 1), "1x1 truecolour with a tRNS naming its only pixel (Pillow's blend_transparency.png is this shape)"),
+	for name, v, what in (("trns-rgb8-1x1", crop(RGB8, 1, 1), "1x1 truecolour with a tRNS naming its only pixel"),
 			("trns-rgb8-2x1", crop(RGB8, 2, 1), "2x1 truecolour with a tRNS naming its pixels' colour: fewer pixels than tRNS samples"),
 			("trns-rgb16-1x1", crop(RGB16, 1, 1), "1x1 16-bit truecolour with tRNS naming its pixel")):
 		body = trns_for(samples(v)[0][0])
@@ -731,31 +743,31 @@ def chunks(c: Corpus) -> None:
 	W, H = picture.W, picture.H
 	c.emit("iend-missing", png(iend=None), "may-reject", "11.2#iend-present", "datastream ends after the last IDAT")
 	c.emit("iend-len-4", png(iend=B.chunk(b"IEND", bytes(4))), "recover", "11.2#iend-last",
-		"IEND with four data bytes (13.1: most decoders can ignore an invalid IEND)")
+		"IEND with four data bytes")
 	c.emit("iend-dup", png(trailer=IEND), "recover", "11.2#iend-last", "two IEND chunks")
 	c.emit("iend-crc-bad", png(iend=B.chunk(b"IEND", crc_value=0)), "may-reject", "13.1#crc-critical", "IEND with a wrong CRC")
 	c.emit("iend-before-idat", B.assemble([B.ihdr(W, H, 8, 2), IEND, B.chunk(b"IDAT", z)]), "must-reject", "11.2#idat-present",
-		"IEND before IDAT: no image data before the end", None)
+		"IEND before IDAT", None)
 	c.emit("trailing-garbage", png(trailer=b"GARBAGE" * 8), "recover", "11.2#iend-last", "56 bytes of non-chunk data after IEND")
 	c.emit("trailing-partial-chunk", png(trailer=b"\0\0\0\x10tEXt"), "recover", "11.2#iend-last", "a truncated chunk header after IEND")
 
 	# Private names (second letter lowercase) wherever the name is not the point, so each file has one fault.
 	c.emit("chunk-unknown-critical-before-idat", png(before=[B.chunk(b"CrIT", bytes(8))]), "must-reject", "5.4#unknown-critical",
-		"unknown critical chunk CrIT before IDAT: fatal for a decoder extracting the image")
+		"unknown critical chunk CrIT before IDAT")
 	c.emit("chunk-unknown-critical-after-idat", png(after_idat=[B.chunk(b"CrIT", bytes(8))]), "must-reject", "5.4#unknown-critical",
 		"unknown critical chunk CrIT after IDAT")
 	c.emit("chunk-unknown-ancillary-public", png(before=[B.chunk(b"aBCD", bytes(8))]), "display", "5.7.2#undefined-public",
-		"unknown ancillary public chunk: never an error for a decoder")
+		"unknown ancillary public chunk")
 	c.emit("chunk-unknown-ancillary-private", png(before=[B.chunk(b"prIv", bytes(8))]), "display", "5.4#unknown-ancillary", "unknown ancillary private chunk")
 	c.emit("chunk-unknown-ancillary-after-idat", png(after_idat=[B.chunk(b"prIv", bytes(8))]), "display", "5.4#unknown-ancillary",
 		"unknown ancillary private chunk between IDAT and IEND")
 	c.emit("chunk-reserved-bit-ancillary", png(before=[B.chunk(b"test", bytes(8))]), "display", "5.4#reserved-bit",
-		"reserved bit set on an unknown ancillary private chunk (test): treat as unknown, do not flag")
+		"reserved bit set on an unknown ancillary private chunk (test)")
 	c.emit("chunk-reserved-bit-known", png(before=[B.chunk(b"gAma", GAMA)]), "display", "5.4#reserved-bit",
 		"gAma: a known name with the reserved bit set is a different, unknown chunk")
 	c.emit("chunk-reserved-bit-critical", png(before=[B.chunk(b"Test", bytes(8))]), "must-reject", "5.4#unknown-critical,5.4#reserved-bit",
 		"reserved bit set on an unknown critical private chunk (Test): still an unknown critical chunk")
-	for name, ctype, what in (("chunk-type-digit", b"t3Xt", "a digit: not a valid type; a decoder may treat as corruption"),
+	for name, ctype, what in (("chunk-type-digit", b"t3Xt", "a digit"),
 			("chunk-type-nul", b"teX\0", "a NUL byte"), ("chunk-type-space", b"teX ", "a space")):
 		c.emit(name, png(before=[B.chunk(ctype, bytes(8))]), "may-reject", "5.3#type-letters", f"chunk type containing {what}")
 	c.emit("chunk-len-2-31", png(before=[B.chunk(b"tEXt", b"k\0v", length=0x80000000)]), "must-reject", "5.3#length-limit",
@@ -765,13 +777,13 @@ def chunks(c: Corpus) -> None:
 	c.emit("chunk-len-beyond-file", png(before=[B.chunk(b"tEXt", b"k\0v", length=100000)]), "must-reject", "11.2#idat-present",
 		"ancillary chunk declaring more bytes than the file has", None)
 	c.emit("chunk-ancillary-crc-bad", png(before=[B.chunk(b"tEXt", b"k\0v", crc_value=1)]), "may-reject", "13.1#crc-ancillary",
-		"bad CRC on a tEXt chunk (13.1: a decoder may regard a CRC mismatch as fatal)")
+		"bad CRC on a tEXt chunk")
 	c.emit("chunk-unknown-ancillary-crc-bad", png(before=[B.chunk(b"prIv", bytes(8), crc_value=1)]), "may-reject", "13.1#crc-ancillary",
 		"bad CRC on an unknown ancillary private chunk")
 	c.emit("chunk-gama-crc-bad", png(before=[B.chunk(b"gAMA", GAMA, crc_value=1)]), "may-reject", "13.1#crc-ancillary", "bad CRC on gAMA")
 	(g_a,), _ = Counter(s for row in samples(G8) for s in row).most_common(1)[0]
 	c.emit("chunk-trns-crc-bad", png(G8, before=[B.chunk(b"tRNS", trns_for((g_a,)), crc_value=1)]), "may-reject", "13.1#crc-ancillary",
-		f"bad CRC on tRNS naming grey {g_a}, a colour of the picture: dropping the chunk (recommended) leaves it opaque, using it makes it transparent, rejecting is also allowed", G8)
+		f"bad CRC on a tRNS naming grey {g_a}, a colour of the picture: dropped, it stays opaque; used, it turns transparent", G8)
 	c.emit("chunk-idat-crc-bad-first", png(idats=[B.chunk(b"IDAT", z[:8], crc_value=1), B.chunk(b"IDAT", z[8:])]), "may-reject", "13.1#crc-critical",
 		"bad CRC on the first of two IDATs, data intact")
 	c.emit("chunk-many-ancillary", png(before=[B.chunk(b"tEXt", f"k{i}\0v".encode()) for i in range(2000)]), "display", "11.3.3.2#text",
@@ -797,7 +809,7 @@ def ancillary(c: Corpus) -> None:
 		return png(P8, before=list(chunks)) if before else png(P8, after_plte=list(chunks))
 	t = lambda *f: struct.pack(">HBBBBB", *f)
 	cases = [
-		("gama-len-2", on(ch(b"gAMA", GAMA[:2])), "recover", "13.2#known-length", "gAMA with 2 bytes; recommended: ignore the chunk", RGB8),
+		("gama-len-2", on(ch(b"gAMA", GAMA[:2])), "recover", "13.2#known-length", "gAMA with 2 bytes", RGB8),
 		("gama-len-0", on(ch(b"gAMA", b"")), "recover", "13.2#known-length", "gAMA with 0 bytes", RGB8),
 		("bkgd-len-0", on(ch(b"bKGD", b"")), "recover", "13.2#known-length", "bKGD with 0 bytes", RGB8),
 		("chrm-len-0", on(ch(b"cHRM", b"")), "recover", "13.2#known-length", "cHRM with 0 bytes", RGB8),
@@ -817,15 +829,15 @@ def ancillary(c: Corpus) -> None:
 		("gama-len-5", on(ch(b"gAMA", GAMA + b"\0")), "recover", "13.2#known-length", "gAMA with 5 bytes", RGB8),
 		("gama-value-0", on(ch(b"gAMA", bytes(4))), "recover", "11.3.2.2#zero", "gAMA 0 (a meaningless value)", RGB8),
 		("gama-value-huge", on(ch(b"gAMA", b"\xff\xff\xff\xff")), "recover", "7.1#uint31", "gAMA 4294967295 (gamma 42949.67)", RGB8),
-		("gama-after-plte", pal(ch(b"gAMA", GAMA)), "recover", "5.6#before-plte", "gAMA after PLTE: out of order; pixels unaffected", P8),
+		("gama-after-plte", pal(ch(b"gAMA", GAMA)), "recover", "5.6#before-plte", "gAMA after PLTE", P8),
 		("gama-after-idat", after(ch(b"gAMA", GAMA)), "recover", "5.6#before-plte", "gAMA after IDAT", RGB8),
 		("gama-dup", on(ch(b"gAMA", GAMA), ch(b"gAMA", struct.pack(">I", 100000))), "recover", "5.6#single-ancillary",
-			"two gAMA chunks (13.1 names this as a syntax error a decoder decides about)", RGB8),
+			"two gAMA chunks", RGB8),
 		("srgb-len-2", on(ch(b"sRGB", b"\0\0")), "recover", "13.2#known-length", "sRGB with 2 bytes", RGB8),
 		("srgb-intent-4", on(ch(b"sRGB", b"\x04")), "recover", "11.3.2.5#intent", "sRGB rendering intent 4 (defined: 0-3)", RGB8),
 		("srgb-after-idat", after(ch(b"sRGB", b"\0")), "recover", "5.6#before-plte", "sRGB after IDAT", RGB8),
 		("srgb-and-iccp", on(ch(b"sRGB", b"\0"), ch(b"iCCP", b"p\0\0" + zlib.compress(ICC_RGB))), "recover", "5.6#iccp-srgb",
-			"sRGB and iCCP both present (should not)", RGB8),
+			"sRGB and iCCP both present", RGB8),
 		("srgb-gama-mismatch", on(ch(b"sRGB", b"\0"), ch(b"gAMA", struct.pack(">I", 100000))), "recover", "11.3.2.5#compat-values",
 			"sRGB with gAMA 100000, not the 45455 sRGB implies", RGB8),
 		("srgb-chrm-mismatch", on(ch(b"sRGB", b"\0"), ch(b"cHRM", SRGB_CHRM[:-4] + struct.pack(">I", 6001))), "recover", "11.3.2.5#compat-values",
@@ -854,7 +866,7 @@ def ancillary(c: Corpus) -> None:
 		("ztxt-method-1", on(ch(b"zTXt", b"Comment\0\x01" + zlib.compress(b"hi"))), "recover", "11.3.3.3#method", "zTXt compression method 1", RGB8),
 		("ztxt-bad-zlib", on(ch(b"zTXt", b"Comment\0\0\xff\xff\xff\xff")), "recover", "11.3.3.3#zlib", "zTXt whose zlib stream is garbage", RGB8),
 		("ztxt-bad-adler", on(ch(b"zTXt", b"Comment\0\0" + zlib.compress(b"hello")[:-4] + bytes(4))), "recover", "11.3.3.3#zlib",
-			"zTXt with a wrong Adler-32 (the image-rs iCCP case, on text)", RGB8),
+			"zTXt with a wrong Adler-32", RGB8),
 		("ztxt-no-null", on(ch(b"zTXt", b"Comment")), "recover", "11.3.3.3#separator", "zTXt without a null separator", RGB8),
 		("ztxt-len-1", on(ch(b"zTXt", b"\0")), "recover", "11.3.3.1#keyword-length", "zTXt of one byte", RGB8),
 		("ztxt-bomb", on(ch(b"zTXt", b"Comment\0\0" + zlib.compress(bytes(64 << 20), 9))), "recover", "11.3.3.3#null",
@@ -887,7 +899,7 @@ def ancillary(c: Corpus) -> None:
 			"sPLT whose entries are not a whole number of 6-byte records", RGB8),
 		("splt-no-null", on(ch(b"sPLT", b"name")), "recover", "11.3.4.4#separator", "sPLT without a null separator", RGB8),
 		("splt-dup-name", on(ch(b"sPLT", b"name\0\x08" + bytes(6)), ch(b"sPLT", b"name\0\x08" + b"\xff" * 6)), "recover", "11.3.4.4#unique-name",
-			"two sPLT chunks with the same name (shall not)", RGB8),
+			"two sPLT chunks with the same name", RGB8),
 		("splt-after-idat", after(ch(b"sPLT", b"name\0\x08" + bytes(6))), "recover", "5.6#before-idat", "sPLT after IDAT", RGB8),
 	]
 	prof = zlib.compress(ICC_RGB)
@@ -906,7 +918,7 @@ def ancillary(c: Corpus) -> None:
 		("iccp-bomb", on(ch(b"iCCP", b"p\0\0" + zlib.compress(bytes(64 << 20), 9))), "recover", "11.3.2.3#profile", "iCCP that inflates to 64 MiB", RGB8),
 		("exif-len-0", on(ch(b"eXIf", b"")), "recover", "11.3.4.5#header", "zero-length eXIf", RGB8),
 		("exif-garbage", on(ch(b"eXIf", b"Lorem ipsum dolor sit amet")), "recover", "11.3.4.5#header",
-			"eXIf whose payload is not a TIFF header (wuffs's exif.png is the same idea at 1x1)", RGB8),
+			"eXIf whose payload is not a TIFF header", RGB8),
 		("exif-tiff-header-only", on(ch(b"eXIf", b"II*\0\x08\0\0\0")), "recover", "11.3.4.5#structure", "eXIf with a TIFF header and no IFD", RGB8),
 		("exif-bad-ifd-offset", on(ch(b"eXIf", b"MM\0*\xff\xff\xff\xf0")), "recover", "11.3.4.5#structure",
 			"eXIf whose first IFD offset points far outside the chunk", RGB8),
@@ -932,11 +944,11 @@ def ancillary(c: Corpus) -> None:
 		("fctl-len-25", on(actl1, ch(b"fcTL", bytes(25))), "recover", "11.3.6.2#length", "fcTL of 25 bytes before IDAT", RGB8),
 		("fctl-len-0", on(actl1, ch(b"fcTL", b"")), "recover", "11.3.6.2#length", "fcTL of 0 bytes before IDAT", RGB8),
 		("fctl-dims-mismatch", on(actl1, fctl(0, 2, 2, 0, 0)), "recover", "11.3.6.2#default-image",
-			f"fcTL for the IDAT frame declares 2x2 for a {W}x{H} image: an APNG error, the static image is still complete", RGB8),
+			f"fcTL for the IDAT frame declares 2x2 for a {W}x{H} image", RGB8),
 		("fctl-dispose-3", on(actl1, fctl(0, W, H, 0, 0, dispose=3)), "recover", "11.3.6.2#dispose-op",
-			"fcTL for the IDAT frame with dispose_op 3 (undefined): an APNG error, the static image is still complete", RGB8),
+			"fcTL for the IDAT frame with dispose_op 3, which is undefined", RGB8),
 		("fdat-without-fctl", after(actl(2), fdat(1, zdata(RGB8))), "recover", "11.3.6.1#before-idat",
-			"acTL after IDAT, fdAT with no fcTL: broken animation, complete still image", RGB8),
+			"acTL after IDAT, fdAT with no fcTL", RGB8),
 	]
 	for name, data, expect3, clause, note, v in cases:
 		c.emit(name, data, expect3, clause, note, v)
@@ -1084,7 +1096,6 @@ def apng(c: Corpus) -> None:
 		c.emit(f"apng-{tag}", animation(v, [FRAME2]), "display", in_order(f"11.2.1#{tag}", "11.3.6.3#fdat"), f"as apng-idat-is-frame on {tag}", v)
 
 	# Faults: every one leaves the static image complete (13.1: display the static image).
-	still = "; the static image is complete"
 	def seq_png(numbers: tuple[int, int, int]) -> bytes:
 		z = frame_z(RGBA8, 6, 7)
 		return png(RGBA8, before=[actl(2), fctl(numbers[0], W, H, 0, 0)], after_idat=[fctl(numbers[1], *FRAME2), fdat(numbers[2], z)])
@@ -1092,30 +1103,30 @@ def apng(c: Corpus) -> None:
 	for name, numbers, what in (("apng-sequence-first-not-zero", (1, 2, 3), "the first fcTL has sequence number 1"),
 			("apng-sequence-gap", (0, 1, 3), "the fdAT's sequence number skips 2"),
 			("apng-sequence-out-of-order", (0, 2, 1), "the fdAT's sequence number 1 is lower than its fcTL's 2")):
-		c.emit(name, seq_png(numbers), "recover", "4.9.2#sequence-numbers", f"as apng-idat-is-frame; {what} ({', '.join(map(str, numbers))}){still}", RGBA8)
+		c.emit(name, seq_png(numbers), "recover", "4.9.2#sequence-numbers", f"as apng-idat-is-frame; {what} ({', '.join(map(str, numbers))})", RGBA8)
 	z = frame_z(RGBA8, 6, 7)
 	two = lambda n: png(RGBA8, before=[actl(n), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, *FRAME2), fdat(2, z)])
-	c.emit("apng-num-frames-more", two(3), "recover", "11.3.6.1#num-frames", f"acTL says 3 frames, there are two fcTL{still}", RGBA8)
-	c.emit("apng-num-frames-fewer", two(1), "recover", "11.3.6.1#num-frames", f"acTL says 1 frame, there are two fcTL{still}", RGBA8)
+	c.emit("apng-num-frames-more", two(3), "recover", "11.3.6.1#num-frames", f"acTL says 3 frames, there are two fcTL", RGBA8)
+	c.emit("apng-num-frames-fewer", two(1), "recover", "11.3.6.1#num-frames", f"acTL says 1 frame, there are two fcTL", RGBA8)
 	c.emit("apng-fctl-without-actl", png(RGBA8, after_idat=[fctl(0, *FRAME2), fdat(1, z)]), "recover", "11.3.6.1#missing",
 		"fcTL and fdAT after IDAT with no acTL: not an APNG, the IDAT image is all there is", RGBA8)
 	c.emit("apng-fctl-without-fdat", png(RGBA8, before=[actl(2), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, *FRAME2)]), "recover", "11.3.6.3#frame-data",
-		f"acTL(2, 0) and a second fcTL after IDAT with no fdAT: frame 2 has no data{still}", RGBA8)
+		f"acTL(2, 0) and a second fcTL after IDAT with no fdAT: frame 2 has no data", RGBA8)
 	c.emit("apng-actl-dup", png(RGBA8, before=[actl(2), actl(2), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, *FRAME2), fdat(2, z)]), "recover",
-		"5.6#single-ancillary", f"as apng-idat-is-frame with its acTL twice{still}", RGBA8)
+		"5.6#single-ancillary", f"as apng-idat-is-frame with its acTL twice", RGBA8)
 	c.emit("apng-fctl-uint31", png(RGBA8, before=[actl(1), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, 6, 7, 1 << 31, 4)]), "recover", "7.1#uint31",
 		"acTL(1, 0) and the IDAT frame's fcTL, then a further fcTL after IDAT whose x_offset is 2^31, past the PNG integer range "
 		"(the delay fields are two bytes and cannot hold it): that fcTL is ignored, which leaves a valid one-frame animation", RGBA8)
 	c.emit("apng-two-fctl-before-idat", png(RGBA8, before=[actl(2), fctl(0, W, H, 0, 0), fctl(1, W, H, 0, 0)]), "recover", "11.3.6.2#one-before-idat",
-		f"acTL(2, 0) and two fcTL for the full image before IDAT: only one may precede IDAT{still}", RGBA8)
+		f"acTL(2, 0) and two fcTL for the full image before IDAT: only one may precede IDAT", RGBA8)
 	c.emit("apng-frame-outside", png(RGBA8, before=[actl(2), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, 6, 7, 9, 10), fdat(2, z)]), "recover",
-		"11.3.6.2#region", f"frame 2 is 6x7 at (9, 10): past the right and bottom edges{still}", RGBA8)
+		"11.3.6.2#region", f"frame 2 is 6x7 at (9, 10): past the right and bottom edges", RGBA8)
 	c.emit("apng-frame-zero-size", png(RGBA8, before=[actl(2), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, 0, 7, 3, 4), fdat(2, zlib.compress(b""))]),
-		"recover", "11.3.6.2#dimensions", f"frame 2's fcTL has width 0, its fdAT an empty zlib stream{still}", RGBA8)
+		"recover", "11.3.6.2#dimensions", f"frame 2's fcTL has width 0, its fdAT an empty zlib stream", RGBA8)
 	# A 4-byte fdAT (sequence number, no data) is a legal empty piece of frame data to the reference; 3 bytes cannot hold
 	# the sequence number. The frame's real fdAT follows, so the short chunk is the file's one fault.
 	c.emit("apng-fdat-empty", png(RGBA8, before=[actl(2), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, *FRAME2), B.chunk(b"fdAT", bytes(3)), fdat(2, z)]),
-		"recover", "11.3.6.3#length", f"as apng-idat-is-frame with a 3-byte fdAT before frame 2's fdAT: too short even for a sequence number{still}", RGBA8)
+		"recover", "11.3.6.3#length", f"as apng-idat-is-frame with a 3-byte fdAT before frame 2's fdAT: too short even for a sequence number", RGBA8)
 	whole = two(2)
 	cut = whole.index(b"fdAT") + 4 + 4 + len(z) // 2
 	c.emit("apng-truncated-fdat", whole[:cut], "may-reject", "13.1#end-of-stream",
@@ -1175,9 +1186,9 @@ def informational(c: Corpus) -> None:
 	for name, v, profile, expect3, clause, what in (
 			("iccp-rgb", RGB8, ICC_RGB, "display", "11.3.2.3#iccp", "an RGB profile on rgb8"),
 			("iccp-gray-on-gray", G8, icc_gray, "display", "11.3.2.3#iccp", "a GRAY profile on g8"),
-			("iccp-gray-on-rgb", RGB8, icc_gray, "recover", "11.3.2.3#colour-space", "a GRAY profile on rgb8: shall be RGB for colour images"),
-			("iccp-cmyk-on-rgb", RGB8, icc_cmyk, "recover", "11.3.2.3#colour-space", "a CMYK profile on rgb8: shall be RGB for colour images"),
-			("iccp-rgb-on-gray", G8, ICC_RGB, "recover", "11.3.2.3#colour-space", "an RGB profile on g8: shall be GRAY for greyscale images")):
+			("iccp-gray-on-rgb", RGB8, icc_gray, "recover", "11.3.2.3#colour-space", "a GRAY profile on rgb8"),
+			("iccp-cmyk-on-rgb", RGB8, icc_cmyk, "recover", "11.3.2.3#colour-space", "a CMYK profile on rgb8"),
+			("iccp-rgb-on-gray", G8, ICC_RGB, "recover", "11.3.2.3#colour-space", "an RGB profile on g8")):
 		c.emit(name, png(v, before=[iccp(profile)]), expect3, clause,
 			f"iCCP holding {what}; the profile is a 132-byte header with an empty tag table, so it maps nothing", v)
 
@@ -1190,8 +1201,8 @@ def informational(c: Corpus) -> None:
 		return b"II*\0" + struct.pack("<IH", 8, 1) + struct.pack("<HHIHH", 0x112, 3, 1, orientation, 0) + struct.pack("<I", 0)
 	c.emit("exif-valid", png(before=[ch(b"eXIf", exif(1))]), "display", "11.3.4.5#exif", "eXIf: little-endian TIFF header and one IFD with Orientation 1")
 	c.emit("exif-orientation-6", png(before=[ch(b"eXIf", exif(6))]), "display", "11.3.4.5#exif",
-		"eXIf with Orientation 6 (rotate 90 degrees clockwise to display); nothing in PNG says to apply it, so the expected pixels are unrotated "
-		"and a decoder that rotates is counted wrong here: a question for the report")
+		"eXIf with Orientation 6, rotate 90° clockwise to display; nothing in PNG says to apply it, so the expected pixels are unrotated, "
+		"and a decoder that rotates counts as wrong")
 	counts = Counter(i for row in P8.rows for i in row)
 	assert sorted(counts) == list(range(len(entries(P8)))), "every palette entry is used"
 	hist = struct.pack(f">{len(counts)}H", *(min(counts[i], 65535) for i in range(len(counts))))
@@ -1272,8 +1283,8 @@ def cgbi(c: Corpus) -> None:
 	assert zlib.decompress(deflated, -15) == data and any(rows[y] != list(v.rows[y]) for y in range(v.height))
 	c.emit("chunk-cgbi", B.assemble([B.chunk(b"CgBI", b"\x50\x00\x20\x02"), B.ihdr(v.width, v.height, 8, 6), B.chunk(b"IDAT", deflated), IEND]),
 		"must-reject", "11.2#ihdr-first",
-		"Apple CgBI as Xcode writes it: a CgBI chunk before IHDR, rgba8, IDAT a raw DEFLATE stream (no zlib header or Adler-32) of "
-		"scanlines in BGRA order with colour premultiplied by alpha; a decoder that accepts it shows the picture only if it undoes both", None)
+		"Apple CgBI as Xcode writes it: a CgBI chunk before IHDR, raw DEFLATE image data without zlib framing, "
+		"samples in BGRA order, colour premultiplied by alpha", None)
 
 
 # ---------------------------------------------------------------- signature, IEND, PLTE
@@ -1287,7 +1298,10 @@ def singles(c: Corpus) -> None:
 	c.emit("plte-missing-pal", png(P8, plte=[]), "must-reject", "11.2.2#required", "p8 with no PLTE anywhere", None)
 
 
-SECTIONS = (filters, adam7, packing, structure, deflate, ihdr, plte, trns, chunks, ancillary, idot, apng, informational, trns_adam7, dimensions, cgbi, singles)
+# (family, section): the family is the reader-facing name of the cases a section writes, in this order.
+SECTIONS = [("Filters", filters), ("Interlacing", adam7), ("Bit packing", packing), ("IDAT and zlib", structure), ("DEFLATE", deflate),
+	("IHDR", ihdr), ("PLTE", plte), ("tRNS", trns), ("Chunks", chunks), ("Ancillary chunks", ancillary), ("iDOT", idot), ("APNG", apng),
+	("Ancillary chunks", informational), ("tRNS", trns_adam7), ("Dimensions", dimensions), ("CgBI", cgbi), ("Chunks", singles)]
 
 
 def main() -> None:
@@ -1298,8 +1312,10 @@ def main() -> None:
 		p.unlink()
 	with tempfile.TemporaryDirectory() as scratch:
 		c = Corpus(out, Path(scratch))
-		for section in SECTIONS:
+		for family, section in SECTIONS:
+			c.family = family
 			section(c)
+		c.family = None
 	expect.write(out / "manifest.tsv", c.rows)
 	print(f"{len(c.rows)} files")
 

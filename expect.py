@@ -24,7 +24,11 @@ and the Diagnostics record, and pnglens reads the record under each lens. The ma
 
 The filename prefix summarises expect3 (PREFIX). Refreshing refuses to write a manifest in which a
 prefix disagrees with expect3, naming the files; --rename renames them and rewrites their ids instead.
-A refresh keeps the `note` column, synth.py's account of what each file is.
+A refresh keeps synth.py's columns (KEPT):
+- `note`: synth.py's account of what the file is, in one line.
+- `about`: the clauses the case is about as synth.py names them (comma-joined ids, or empty); `clause`
+  is the reference's first fault, which may differ.
+- `family`: the name of the generator section that wrote the file (synth.SECTIONS).
 """
 import argparse
 import csv
@@ -42,7 +46,7 @@ from pngdiagnostics import Diagnostics
 
 ROOT = Path(__file__).resolve().parent
 FIELDS = ["id", "file", "clause", "reaches", "images", "conforms2", "expect2", "conforms3", "expect3", "strict", "description"]
-KEPT = ["note"]  # synth.py's column, which a refresh keeps
+KEPT = ["note", "about", "family"]  # synth.py's columns, which a refresh keeps
 PREFIX = {"display": "y", "recover": "r", "may-reject": "i", "must-reject": "n"}
 assert set(PREFIX) == set(pnglens.STRENGTH)
 assert tuple(pnglens.LENSES) == ("2", "3"), "the manifest has one conforms and one expect column per lens"

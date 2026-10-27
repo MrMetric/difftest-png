@@ -18,7 +18,9 @@ under fully transparent pixels zeroed or altered (`alpha0`), and, for a column w
 scored under each lens separately (score()), and out/report.json plus out/report.html are written.
 """
 import argparse
+import base64
 import csv
+import io
 import json
 import os
 import shutil
@@ -33,10 +35,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
+import chunkwalk
 import execute
 import expect
 import pnglens
+import report as html_report
 from execute import child_env, run_one
 
 ROOT = Path(__file__).resolve().parent
@@ -47,6 +52,7 @@ FATAL = ("crash", "timeout", "oom", "memory", "shim")  # always a must-violation
 # Not a performance limit: no PNG decoder should need this long, and slow decodes that do finish keep their
 # real outcome instead of becoming a timeout when the machine is busy.
 TIMEOUT_S = 60.0
+THUMBNAIL_MAX = 128  # report.json carries an image as a PNG when neither side is longer
 
 
 @dataclass
@@ -80,6 +86,9 @@ class Test:
 	expectation: dict[str, str]  # lens -> what a decoder is to do with the file
 	strict: str  # the strict notes, comma-joined
 	description: str
+	note: str  # synth.py's account of the file
+	about: list[str]  # the clauses the case is about, as synth.py names them
+	family: str  # the generator section that wrote it
 
 
 def load_impls(head: Path) -> list[Impl]:
@@ -121,8 +130,9 @@ def load_manifest(path: Path) -> list[Test]:
 				reaches=[c for c in r["reaches"].split(",") if c], images=r["images"],
 				conforms={lens: {"yes": True, "no": False}[r[f"conforms{lens}"]] for lens in LENSES},
 				expectation={lens: r[f"expect{lens}"] for lens in LENSES}, strict=r["strict"],
-				description=r["description"],
+				description=r["description"], note=r["note"], about=[c for c in r["about"].split(",") if c], family=r["family"],
 			))
+			assert tests[-1].note and tests[-1].family, f"{r['id']}: no note or family (uv run synth.py)"
 	assert len({t.id for t in tests}) == len(tests), "duplicate test ids"
 	return tests
 
@@ -211,12 +221,14 @@ def has_hidden_colour(a: np.ndarray) -> bool:
 	return bool(np.any((a[:, :, 3] == 0) & np.any(a[:, :, :3] != 0, axis=2)))
 
 
-def label(reading: expect.Reading, image: tuple[str, tuple, bytes], maxval: int, max_depth: int) -> tuple[dict | str | None, str | None]:
-	"""(label, rating) of an accepted output. The label lists the choices of every interpretation the pixels
-	match, with the properties of the match to the best-rated one, which gives the rating (the first in the
-	decoder's order among equals); None when they match none, `unverifiable` when the file has no image."""
+def label(reading: expect.Reading, image: tuple[str, tuple, bytes], maxval: int, max_depth: int) -> tuple[dict | str | None, str | None, str | None]:
+	"""(label, rating, mismatch) of an accepted output. The label lists the choices of every interpretation the
+	pixels match, with the properties of the match to the best-rated one, which gives the rating (the first in
+	the decoder's order among equals); None when they match none, `unverifiable` when the file has no image.
+	`mismatch`, only with a None label, says how the pixels differ from the preferred interpretation's: the two
+	shapes, or how many pixels differ in any channel, compared exactly."""
 	if not reading.interpretations:
-		return "unverifiable", None
+		return "unverifiable", None, None
 	found = []
 	for i in reading.interpretations:
 		if image[0] == i.digest:  # identical pixels: no array work beyond the alpha-0 question
@@ -226,9 +238,14 @@ def label(reading: expect.Reading, image: tuple[str, tuple, bytes], maxval: int,
 		if ok:
 			found.append((i, props))
 	if not found:
-		return None, None
+		got, want = pixels(image), pnglens.preferred(reading.interpretations).rgba
+		if got.shape != want.shape:
+			return None, None, f"{got.shape[1]}x{got.shape[0]} instead of {want.shape[1]}x{want.shape[0]}"
+		differ = int(np.count_nonzero((got != want).any(axis=2)))
+		assert differ, "pixels identical to the preferred interpretation's matched none"
+		return None, None, f"{differ} of {want.shape[0] * want.shape[1]} pixels differ"
 	best, props = max(found, key=lambda m: pnglens.RATING_ORDER.index(pnglens.rate(m[0].choices)))
-	return {"choices": [expect.choices_text(i.choices) for i, _ in found]} | props, pnglens.rate(best.choices)
+	return {"choices": [expect.choices_text(i.choices) for i, _ in found]} | props, pnglens.rate(best.choices), None
 
 
 def score(impl: Impl, verdict: str, lens: pnglens.Verdict, tag: dict | str | None) -> tuple[str, str, bool]:
@@ -255,7 +272,7 @@ def score(impl: Impl, verdict: str, lens: pnglens.Verdict, tag: dict | str | Non
 	return "pixels", "pass", False
 
 
-def judge(impl: Impl, raw: dict, reading: expect.Reading, labelled: tuple[dict | str | None, str | None] | None) -> dict:
+def judge(impl: Impl, raw: dict, reading: expect.Reading, labelled: tuple[dict | str | None, str | None, str | None] | None) -> dict:
 	"""One run's outcome and its severity under each lens. `labelled` is label() of an accepted decoder output."""
 	v = raw["verdict"]
 	res = {"detail": raw["detail"]}
@@ -267,10 +284,13 @@ def judge(impl: Impl, raw: dict, reading: expect.Reading, labelled: tuple[dict |
 	tag = None
 	if v == "accept" and impl.pixels:
 		assert labelled is not None
-		tag, rating = labelled
+		tag, rating, mismatch = labelled
 		res["label"] = tag
 		if rating:
 			res["rating"] = rating
+		assert (mismatch is not None) == (tag is None), (tag, mismatch)
+		if mismatch:
+			res["mismatch"] = mismatch  # an unexplained output: every `wrong` outcome, and an invalid file's accept
 	outcome, sev = {}, {}
 	for lens, verdict in reading.verdicts.items():
 		outcome[lens], sev[lens], strict = score(impl, v, verdict, tag)
@@ -459,14 +479,55 @@ def run_all(avail: list[Impl], tests: list[Test], base: Path, memcheck: bool, jo
 	return raw, missing
 
 
+def load_spec() -> tuple[dict[str, dict], dict[str, dict]]:
+	"""(clauses, sections): spec/clauses.tsv by id, its `section` split into tokens, and spec/sections.tsv by token.
+	Every token of every clause's `section`, and every reference in every `says` (report.references), has a row."""
+	with open(ROOT / "spec" / "sections.tsv", newline="") as f:
+		rows = list(csv.DictReader(f, delimiter="\t"))
+	sections = {r["token"]: {"label": r["label"], "url": r["url"]} for r in rows}
+	assert len(sections) == len(rows), "spec/sections.tsv: duplicate tokens"
+	clauses = {}
+	with open(ROOT / "spec" / "clauses.tsv", newline="") as f:
+		for r in csv.DictReader(f, delimiter="\t"):
+			tokens = [t for group in r["section"].split("; ") for t in group.split(", ")]
+			unknown = [t for t in tokens + html_report.references(r["says"]) if t not in sections]
+			assert not unknown, f"spec/clauses.tsv {r['id']}: no row in spec/sections.tsv for {unknown}"
+			clauses[r["id"]] = {"section": tokens, "says": r["says"], "statement": r["statement"], "consequence": r["consequence"]}
+	return clauses, sections
+
+
+def scrub(res: dict, head: Path) -> None:
+	"""Remove this machine's paths from the strings of a result: the repository root, the directory of HEAD
+	builds (written {head}/, as impls.toml does) and the home directory (written ~/)."""
+	prefixes = ((str(ROOT) + "/", ""), (str(head) + "/", "{head}/"), (str(head.resolve()) + "/", "{head}/"), (str(Path.home()) + "/", "~/"))
+	for k in ("detail", "warning", "memory"):
+		if isinstance(res.get(k), str):
+			for path, short in prefixes:
+				res[k] = res[k].replace(path, short)
+
+
+def thumbnail(rgba: np.ndarray) -> dict:
+	"""report.json's `images` entry for one decoded image: its size, and when neither side is longer than
+	THUMBNAIL_MAX, `png`: base64 of an RGBA 8-bit PNG of the high byte of each sample. A decoder's output
+	may be empty (no rows or no columns), which has no PNG."""
+	h, w, channels = rgba.shape
+	assert channels == 4 and rgba.dtype == np.uint16, (rgba.shape, rgba.dtype)
+	out = {"width": w, "height": h}
+	if 0 < w <= THUMBNAIL_MAX and 0 < h <= THUMBNAIL_MAX:
+		im = Image.fromarray((rgba >> 8).astype(np.uint8))
+		assert im.mode == "RGBA", im.mode
+		buf = io.BytesIO()
+		im.save(buf, "PNG")
+		out["png"] = base64.b64encode(buf.getvalue()).decode("ascii")
+	return out
+
+
 def _judge_and_report(args, tests: list[Test], avail: list[Impl], raw: dict, memcheck: bool) -> None:
 	problems = []
 	results: dict[str, dict[str, dict]] = {impl.name: {} for impl in avail}
 	report_tests = []
-	clauses = {}
-	with open(ROOT / "spec" / "clauses.tsv", newline="") as f:
-		for r in csv.DictReader(f, delimiter="\t"):
-			clauses[r["id"]] = r["statement"]
+	clauses, sections = load_spec()
+	images: dict[str, dict] = {}
 	derived = [k for k in expect.FIELDS if k not in ("id", "file", "clause", "reaches", "description")]
 	for t in tests:
 		file = args.manifest.parent / t.file
@@ -485,6 +546,8 @@ def _judge_and_report(args, tests: list[Test], avail: list[Impl], raw: dict, mem
 				problems.append(f"{t.id}: no longer reaches {', '.join(sorted(missing))}")
 		test_raw = {impl.name: raw[(impl.name, t.id)] for impl in avail}
 		judged = judge_test(avail, test_raw, reading)
+		for res in judged.values():
+			scrub(res, args.head)
 		buckets: dict[tuple, dict] = {}
 		for impl in avail:
 			res = results[impl.name][t.id] = judged[impl.name]
@@ -493,6 +556,11 @@ def _judge_and_report(args, tests: list[Test], avail: list[Impl], raw: dict, mem
 				tag = res["label"] if res["label"] is not None else "unexplained"
 				b = buckets.setdefault((digest, json.dumps(tag, sort_keys=True)), {"label": tag, "digest": digest, "columns": []})
 				b["columns"].append(impl.name)
+				if digest not in images:
+					images[digest] = thumbnail(pixels(test_raw[impl.name]["image"]))
+		for i in reading.interpretations:
+			if i.digest not in images:
+				images[i.digest] = thumbnail(i.rgba)
 		for lens, name in REFERENCES.items():
 			ref, verdict = judged[name], reading.verdicts[lens]
 			outcome = ref["outcome"] if isinstance(ref["outcome"], str) else ref["outcome"][lens]
@@ -501,12 +569,15 @@ def _judge_and_report(args, tests: list[Test], avail: list[Impl], raw: dict, mem
 			if ref["severity"][lens] != "pass" or (image[0] if image else None) != want:
 				problems.append(f"{t.id}: {name} ({outcome}, {ref['severity'][lens]} under lens {lens}) is not the reference "
 					f"decoder read through lens {lens} ({'its preferred interpretation' if want else 'a rejection'})")
+		assert all(c in clauses for c in t.about + [t.clause] if c), (t.id, t.about, t.clause)
 		report_tests.append({
-			"id": t.id, "file": t.file, "clause": t.clause, "statement": clauses.get(t.clause, ""), "description": t.description,
+			"id": t.id, "file": t.file, "clause": t.clause, "statement": clauses[t.clause]["statement"] if t.clause else "",
+			"description": t.description, "note": t.note, "about": t.about, "family": t.family, "chunks": chunkwalk.walk(file.read_bytes()),
 			"expectation": {lens: v.expectation for lens, v in reading.verdicts.items()},
 			"conforms": {lens: v.conforms for lens, v in reading.verdicts.items()},
 			"strict": [n for n in t.strict.split(",") if n],
 			"interpretations": {expect.choices_text(i.choices): i.digest for i in reading.interpretations},
+			"preferred": pnglens.preferred(reading.interpretations).digest if reading.interpretations else None,
 			"buckets": sorted(({"label": b["label"], "digest": b["digest"], "count": len(b["columns"]), "columns": b["columns"]}
 				for b in buckets.values()), key=lambda b: (-b["count"], b["digest"])),
 		})
@@ -525,11 +596,18 @@ def _judge_and_report(args, tests: list[Test], avail: list[Impl], raw: dict, mem
 		"tests": report_tests,
 		"results": results,
 	}
+	used = {c: clauses[c] for t in report_tests for c in t["about"] + [t["clause"]] if c}
+	report["clauses"] = used
+	report["sections"] = {tok: sections[tok] for c in used.values() for tok in c["section"] + html_report.references(c["says"])}
+	report["images"] = images
+	report["ratings"] = {f"{topic}:{option}": rating for (topic, option), rating in pnglens.RATINGS.items()}
+	report["expectations"] = list(pnglens.STRENGTH)  # strongest first
+	text = json.dumps(report, indent="\t", ensure_ascii=False) + "\n"
+	assert str(Path.home()) not in text, f"report.json holds a path under {Path.home()}"
 	args.out.mkdir(parents=True, exist_ok=True)
-	(args.out / "report.json").write_text(json.dumps(report, indent="\t", ensure_ascii=False) + "\n")
+	(args.out / "report.json").write_text(text)
 	for p in problems:
 		print(f"[problem] {p}", file=sys.stderr)
-	import report as html_report
 	html_report.write(report, args.out / "report.html")
 	print(f"[report] {args.out / 'report.json'}, {args.out / 'report.html'}", file=sys.stderr)
 	if problems:
