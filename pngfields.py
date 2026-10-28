@@ -553,7 +553,7 @@ def _icc(p, data):
 	# 7.1.2 permits multiple tags to reference the same data element, not partially overlapping elements.
 	extents = sorted(set(extents))
 	check(all(a[1] <= b[0] for a, b in zip(extents, extents[1:])), "ICC tag elements overlap", kind=Fault.VALUE)
-	return Values({"colour_space": data[16:20].decode("latin-1"), "tags": count})
+	return Values({"color_space": data[16:20].decode("latin-1"), "tags": count})
 
 
 def _exif(p, data):

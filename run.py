@@ -12,7 +12,7 @@ The whole run sits in a systemd scope capped at half the machine's memory.
 
 Judging decodes each test file in-process once (expect.reading): every interpretation of its pixels and
 each lens's verdict. Per test, the columns' accepted outputs are bucketed by their pixels, and each bucket
-is labelled with the interpretations it matches under the equivalences of compare(): exact, the colour
+is labelled with the interpretations it matches under the equivalences of compare(): exact, the color
 under fully transparent pixels zeroed or altered (`alpha0`), and, for a column whose max_depth is 8, a
 16-to-8 reduction (`16to8`). A bucket that matches no interpretation is unexplained. Every outcome is then
 scored under each lens separately (score()), and out/report.json plus out/report.html are written.
@@ -218,8 +218,8 @@ def visible_equal(a: np.ndarray, b: np.ndarray) -> bool:
 	return np.array_equal(a[shown], b[shown])
 
 
-def has_hidden_colour(a: np.ndarray) -> bool:
-	"""Does the image hold a fully transparent pixel whose colour is not black?"""
+def has_hidden_color(a: np.ndarray) -> bool:
+	"""Does the image hold a fully transparent pixel whose color is not black?"""
 	return bool(np.any((a[:, :, 3] == 0) & np.any(a[:, :, :3] != 0, axis=2)))
 
 
@@ -234,7 +234,7 @@ def label(reading: expect.Reading, image: tuple[str, tuple, bytes], maxval: int,
 	found = []
 	for i in reading.interpretations:
 		if image[0] == i.digest:  # identical pixels: no array work beyond the alpha-0 question
-			ok, props = True, ({"alpha0": "preserved"} if has_hidden_colour(i.rgba) else {})
+			ok, props = True, ({"alpha0": "preserved"} if has_hidden_color(i.rgba) else {})
 		else:
 			ok, props = compare(max_depth, pixels(image), maxval, i.rgba)
 		if ok:
@@ -341,7 +341,7 @@ def transparency_source(reaches: list[str]) -> str:
 def summarize(results: dict[str, dict], conforms: dict[str, dict[str, bool]], source: dict[str, str]) -> dict:
 	"""Per lens, how many tests the column passes and fails, and on how many files that do not conform it
 	was silent (accepted them without a warning; no severity, an observation); the properties of its
-	matches: `alpha0` per source of the transparency (SOURCES) as behaviour -> count, since a decoder that expands
+	matches: `alpha0` per source of the transparency (SOURCES) as behavior -> count, since a decoder that expands
 	a tRNS color key itself may zero what it preserves under an alpha channel or a palette, and `16to8` as the
 	reductions seen; and per choice topic, how many tests it resolved with each option (the option every
 	interpretation it matched shares). `conforms`: test id -> lens -> whether the file conforms; `source`: test id ->

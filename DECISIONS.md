@@ -147,7 +147,7 @@ file. This applies even when the decoder is killed by the test run's own memory 
 no decoder should need that much memory; a machine with more RAM would only hide the problem.
 
 Memory errors are found by running each native-code decoder under valgrind memcheck, in a
-separate pass. Valgrind works on unmodified binaries and catches reads of uninitialised memory,
+separate pass. Valgrind works on unmodified binaries and catches reads of uninitialized memory,
 which AddressSanitizer misses.
 
 Each decoder is driven the way its documentation says to use it. If that still can't produce

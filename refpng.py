@@ -13,7 +13,7 @@ unknown.
 
 An Interpretation is an Image and the tuple of choices that produced it. A choice is (topic, option):
 	("trns", "first" | "last")      more than one tRNS chunk: the first or the last is used
-	("plte", "first" | "last")      more than one PLTE chunk in an indexed-colour image: likewise
+	("plte", "first" | "last")      more than one PLTE chunk in an indexed-color image: likewise
 	("crc", "dropped" | "ignored")  a pixel-affecting chunk with a bad CRC is not used / used as stored
 	("critical", "ignored")         an unknown critical chunk; the rest is decoded as if it were absent
 A file with no open decision has one interpretation with no choices. Interpretations are sorted by
@@ -22,7 +22,7 @@ the same pixels are still two interpretations.
 
 Image.samples is a flat, row-major array of RGBA samples: array('B') when maxval is 255 (bit depth 8
 or less), array('H') when it is 65535. Palette expanded, tRNS applied (alpha 0 at matching pixels,
-else maxval), sub-byte greyscale scaled exactly to 8 bits; nothing else (no gamma, background or sBIT).
+else maxval), sub-byte grayscale scaled exactly to 8 bits; nothing else (no gamma, background or sBIT).
 
 Each check names a clause of spec/clauses.tsv and quotes the sentence it enforces:
 	d.require(ok, id, msg)   no pixels can exist: recorded as ERR, then NoImage
@@ -38,14 +38,14 @@ Handlers receive Values, never raw chunk bodies. Section numbers are the 3rd edi
 Policies where the specification leaves the decoder a choice (13.1: "The PNG decoder has to
 determine whether a syntax error is fatal (unrecoverable) or not"):
 - Nothing is rejected as a matter of policy. Decoding stops only where no pixels can exist: a wrong
-  signature, no IHDR or an invalid one, an indexed-colour image without a valid PLTE before its image
+  signature, no IHDR or an invalid one, an indexed-color image without a valid PLTE before its image
   data, no IDAT before IEND or the end of the datastream, a zlib header that declares an undefined
   method, window or dictionary or fails its check, image data that does not inflate to the last row,
   and an undefined filter type.
-- CRC mismatch (13.1): IHDR, IDAT and the first PLTE of an indexed-colour image are used as stored
-  (crc:ignored), since without them there is no image; tRNS and any later PLTE of an indexed-colour
+- CRC mismatch (13.1): IHDR, IDAT and the first PLTE of an indexed-color image are used as stored
+  (crc:ignored), since without them there is no image; tRNS and any later PLTE of an indexed-color
   image are read both ways (crc:dropped, crc:ignored); every other chunk with a bad CRC is dropped,
-  since no other chunk changes pixels (13.1 names an invalid IEND and a truecolour PLTE as chunks a
+  since no other chunk changes pixels (13.1 names an invalid IEND and a truecolor PLTE as chunks a
   decoder can ignore). A dropped chunk's content is not used, but it still occupies its place in the
   chunk sequence (it ends a run of IDAT chunks; it can precede IHDR) and its name is checked; it is
   not an occurrence for the duplicate checks.
@@ -56,10 +56,10 @@ determine whether a syntax error is fatal (unrecoverable) or not"):
 - Ancillary chunks: a malformed, misplaced or duplicate chunk is ignored with a warning (13.2
   recommends ignoring unexpected values in ancillary chunks). The second occurrence of a chunk that
   may occur once is a duplicate even if the first was ignored as malformed or misplaced. Duplicate
-  tRNS chunks, and duplicate PLTE chunks before IDAT in an indexed-colour image, open the first/last
+  tRNS chunks, and duplicate PLTE chunks before IDAT in an indexed-color image, open the first/last
   choice instead of being ignored; a tRNS occurrence that is ignored gives no transparency. Checks
   that depend on the palette (tRNS length, bKGD index, hIST) use the first PLTE; the plte choice
-  changes the colours looked up and which indices are out of range.
+  changes the colors looked up and which indices are out of range.
 - Image data: too little ends decoding; too much, bytes after the zlib stream, and a zlib stream that
   stops or becomes invalid after the image is complete are warnings. A wrong Adler-32 is recorded
   (RFC 1950 2.3) and the image decoded.
@@ -155,7 +155,7 @@ class Decoded:
 
 @dataclass
 class _Occurrence:
-	"""One tRNS chunk, or one usable PLTE chunk of an indexed-colour image, as a reading can use it."""
+	"""One tRNS chunk, or one usable PLTE chunk of an indexed-color image, as a reading can use it."""
 	crc_ok: bool
 	value: object = None  # None for a tRNS chunk that is ignored
 
@@ -166,7 +166,7 @@ class _State:
 	def __init__(self, diagnostics: Diagnostics):
 		self.diagnostics = diagnostics
 		self.width = self.height = self.depth = self.ctype = self.interlace = 0
-		self.palettes: list[_Occurrence] = []  # indexed-colour PLTE chunks the plte choice ranges over
+		self.palettes: list[_Occurrence] = []  # indexed-color PLTE chunks the plte choice ranges over
 		self.plte: list[tuple[int, ...]] | None = None  # the first PLTE, which palette-dependent checks use
 		self.trns: list[_Occurrence] = []  # alpha table (type 3) or key sample values (types 0, 2)
 		self.forced: set[tuple[str, str]] = set()  # choices with a single option, carried by every interpretation
@@ -310,7 +310,7 @@ def _crc(d: _State, ctype: bytes, body: bytes, stored: int) -> bool:
 
 
 def _essential(d: _State, ctype: bytes) -> bool:
-	"""IHDR, and the first PLTE of an indexed-colour image: without them no pixels can exist."""
+	"""IHDR, and the first PLTE of an indexed-color image: without them no pixels can exist."""
 	return (ctype == b"IHDR" and b"IHDR" not in d.seen) or (ctype == b"PLTE" and d.ctype == 3 and d.plte is None)
 
 
@@ -337,7 +337,7 @@ def _structure(d: _State, ctype: bytes, length: int) -> bool:
 		return False
 	if ctype == b"IDAT":
 		# 11.2.1 "Each pixel is a palette index; a PLTE chunk shall appear." Table 7: "Before first IDAT".
-		d.require(d.ctype != 3 or d.plte is not None, "11.2.2#required", "indexed-colour image data without a preceding PLTE")
+		d.require(d.ctype != 3 or d.plte is not None, "11.2.2#required", "indexed-color image data without a preceding PLTE")
 		# 11.2.3 "they shall appear consecutively with no other intervening chunks." 10.2: the data of every IDAT
 		# chunk is part of the one zlib datastream.
 		d.expect(d.idat_run != 2, "11.2.3#consecutive", "IDAT chunks are not consecutive")
@@ -384,13 +384,13 @@ def _content_allowed(d: _State, ctype: bytes) -> bool:
 	"""Context rules checked before interpreting a known chunk's declared layout."""
 	if ctype == b"PLTE":
 		# 11.2.2 "it shall not appear for color types 0 and 4."
-		if not d.expect(d.ctype not in (0, 4), "11.2.2#forbidden", f"PLTE in colour type {d.ctype}; ignored"):
+		if not d.expect(d.ctype not in (0, 4), "11.2.2#forbidden", f"PLTE in color type {d.ctype}; ignored"):
 			return False
 		# 5.6 Table 7: "Before first IDAT"; the required indexed PLTE is checked at IDAT.
-		return d.expect(not d.idat_run, "11.2.2#invalid-truecolour", "suggested PLTE after IDAT; ignored")
+		return d.expect(not d.idat_run, "11.2.2#invalid-truecolor", "suggested PLTE after IDAT; ignored")
 	if ctype == b"tRNS":
 		# 11.3.1.1 "A tRNS chunk shall not appear for color types 4 and 6".
-		return d.expect(d.ctype not in (4, 6), "11.3.1.1#forbidden", f"tRNS in colour type {d.ctype}; ignored")
+		return d.expect(d.ctype not in (4, 6), "11.3.1.1#forbidden", f"tRNS in color type {d.ctype}; ignored")
 	if ctype == b"hIST":
 		# 11.3.4.2 "There shall be exactly one entry for each entry in the PLTE chunk."
 		return d.expect(bool(d.plte), "11.3.4.2#entries", "hIST without a palette; ignored")
@@ -451,7 +451,7 @@ def _ordering(d: _State, ctype: bytes) -> bool:
 				d.expect(False, "11.2.2#single", "second (suggested) PLTE chunk ignored")
 				return False
 			# Either palette before IDAT can be the one a decoder keeps: the plte choice.
-			d.expect(False, "11.2.2#single", "second PLTE chunk in an indexed-colour image"
+			d.expect(False, "11.2.2#single", "second PLTE chunk in an indexed-color image"
 				+ (" after IDAT ignored" if d.idat_run else "; the first or the last is used"))
 			return not d.idat_run
 		# Table 7 "Multiple allowed: No"; 13.1 names "the presence of multiple gAMA chunks" as a syntax error.
@@ -709,7 +709,7 @@ def _ihdr(d: _State, f: Values) -> None:
 	d.require(w > 0 and h > 0, "11.2.1#dimensions-nonzero", f"image dimensions {w}x{h}")
 	# 11.2.1 Table 12 lists the allowed combinations; "PNG decoders shall support all valid combinations".
 	allowed = {0: (1, 2, 4, 8, 16), 2: (8, 16), 3: (1, 2, 4, 8), 4: (8, 16), 6: (8, 16)}[ctype]
-	d.require(depth in allowed, "11.2.1#combination", f"colour type {ctype} does not allow bit depth {depth}")
+	d.require(depth in allowed, "11.2.1#combination", f"color type {ctype} does not allow bit depth {depth}")
 	d.width, d.height, d.depth, d.ctype, d.interlace = w, h, depth, ctype, interlace
 	d.reach(f"11.2.1#{CT_NAME[ctype]}{depth}")
 	if depth == 16:
@@ -802,7 +802,7 @@ def _trns(d: _State, f: Values) -> None:
 		return
 	key = f.samples
 	if d.depth == 16:
-		# 15.3.3 "When processing 16-bit greyscale or truecolor data in the tRNS chunk, both bytes of the sample
+		# 15.3.3 "When processing 16-bit grayscale or truecolor data in the tRNS chunk, both bytes of the sample
 		# values are evaluated to determine whether a pixel is transparent."
 		d.reach("15.3.3#trns-both-bytes")
 	elif d.depth < 8:
@@ -824,10 +824,10 @@ def _gama(d: _State, f: Values) -> None:
 		d.reach("11.3.2.2#gama")
 
 def _iccp(d: _State, f: Values) -> None:
-	# 11.3.2.3 "shall be an RGB color space for color images ... or a greyscale color space for greyscale images".
+	# 11.3.2.3 "shall be an RGB color space for color images ... or a grayscale color space for grayscale images".
 	want = "GRAY" if d.ctype in (0, 4) else "RGB "
-	if d.expect(f.profile.colour_space == want, "11.3.2.3#colour-space",
-			f"iCCP colour space {f.profile.colour_space!r}, expected {want!r}; ignored"):
+	if d.expect(f.profile.color_space == want, "11.3.2.3#color-space",
+			f"iCCP color space {f.profile.color_space!r}, expected {want!r}; ignored"):
 		d.reach("11.3.2.3#iccp")
 
 
@@ -1065,14 +1065,14 @@ def layout(*fields, clause="13.2#known-length"):
 
 
 def sample_layout(d, clause, mask_clause):
-	# 11.3.1.1 / 11.3.4.1: grey = 2 bytes, RGB = 6 bytes, indexed = byte entries.
+	# 11.3.1.1 / 11.3.4.1: gray = 2 bytes, RGB = 6 bytes, indexed = byte entries.
 	count = {0: 1, 2: 3, 3: 1, 4: 1, 6: 3}[d.ctype]
 	return layout(("samples", Repeat(BYTE if d.ctype == 3 else Sample(mask_clause), count)), clause=clause)
 
 
 def palette_layout(d):
 	# 11.2.2 "from 1 to 256 palette entries ... length not divisible by 3 is an error".
-	id = "11.2.2#invalid-indexed" if d.ctype == 3 else "11.2.2#invalid-truecolour"
+	id = "11.2.2#invalid-indexed" if d.ctype == 3 else "11.2.2#invalid-truecolor"
 	return layout(("entries", Repeat(Struct((("red", BYTE), ("green", BYTE), ("blue", BYTE))),
 		minimum=1, maximum=256)), clause=id)
 
@@ -1085,7 +1085,7 @@ def trns_layout(d):
 
 # Chunk layouts and handlers share one registration. UInt(4) unconditionally enforces 7.1;
 # signed extension values and Apple uint32 have explicit types. Framing derives from the same declarations.
-# 11.2.1: width/height, bit depth, colour type, compression, filter, interlace.
+# 11.2.1: width/height, bit depth, color type, compression, filter, interlace.
 # 15.3.3 "An error is reported if an unrecognized value is encountered" in the five method bytes.
 CHUNKS = {
 	# ext 4.1: "X position: 4 bytes (signed integer) ... Y position ... Unit specifier: 1 byte";
@@ -1143,7 +1143,7 @@ CHUNKS = {
 	b"IHDR": Chunk(_ihdr, layout(
 		("width", UInt(4, "11.2.1#dimensions-range")), ("height", UInt(4, "11.2.1#dimensions-range")),
 		("depth", enum((1, 2, 4, 8, 16), "11.2.1#bit-depth")),
-		("colour", enum(CHANNELS, "11.2.1#colour-type")),
+		("color", enum(CHANNELS, "11.2.1#color-type")),
 		("compression", enum((0,), "11.2.1#compression-method")),
 		("filter", enum((0,), "11.2.1#filter-method")),
 		("interlace", enum((0, 1), "11.2.1#interlace-method")), clause="11.2.1#length")),
@@ -1229,7 +1229,7 @@ def _output(d: _State, rows: list[list[int]], palette, trns) -> Image:
 		return Image(d.width, d.height, maxval, array("B", b"".join(bytes(lut[v]) for v in flat)))
 	nch = CHANNELS[ct]
 	if ct in (0, 2) and trns is not None:
-		# 11.3.1.1 "Pixels of the specified grey sample value or RGB sample values are treated as transparent
+		# 11.3.1.1 "Pixels of the specified gray sample value or RGB sample values are treated as transparent
 		# (equivalent to alpha value 0); all other pixels are to be treated as fully opaque"
 		key = trns
 		alpha = [0 if tuple(flat[i:i + nch]) == key else maxval for i in range(0, len(flat), nch)] if nch > 1 \
@@ -1241,13 +1241,13 @@ def _output(d: _State, rows: list[list[int]], palette, trns) -> Image:
 	else:
 		alpha = [maxval] * n
 	if d.depth < 8:
-		# Sub-byte greyscale to 8 bits: v * 255 / (2^depth - 1) is exact and equals left bit replication (13.12).
+		# Sub-byte grayscale to 8 bits: v * 255 / (2^depth - 1) is exact and equals left bit replication (13.12).
 		scale = 255 // ((1 << d.depth) - 1)
 		flat = [v * scale for v in flat]
 	out = [0] * (4 * n)
 	if ct in (0, 4):
-		grey = flat[0::nch]
-		out[0::4] = out[1::4] = out[2::4] = grey
+		gray = flat[0::nch]
+		out[0::4] = out[1::4] = out[2::4] = gray
 	else:
 		for c in range(3):
 			out[c::4] = flat[c::nch]

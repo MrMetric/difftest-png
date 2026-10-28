@@ -33,8 +33,8 @@ def assemble(chunks: list[bytes], signature: bytes = SIGNATURE) -> bytes:
 	return signature + b"".join(chunks)
 
 
-def ihdr(width: int, height: int, bit_depth: int, colour_type: int, interlace: int = 0, compression: int = 0, filter_method: int = 0) -> bytes:
-	return chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, bit_depth, colour_type, compression, filter_method, interlace))
+def ihdr(width: int, height: int, bit_depth: int, color_type: int, interlace: int = 0, compression: int = 0, filter_method: int = 0) -> bytes:
+	return chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, bit_depth, color_type, compression, filter_method, interlace))
 
 
 # ---------------------------------------------------------------- pixels -> filtered scanlines
@@ -47,13 +47,13 @@ def pass_size(width: int, height: int, p: int) -> tuple[int, int]:
 	return pw, ph
 
 
-def row_bytes(width: int, colour_type: int, bit_depth: int) -> int:
-	return (width * CHANNELS[colour_type] * bit_depth + 7) // 8
+def row_bytes(width: int, color_type: int, bit_depth: int) -> int:
+	return (width * CHANNELS[color_type] * bit_depth + 7) // 8
 
 
-def bpp(colour_type: int, bit_depth: int) -> int:
+def bpp(color_type: int, bit_depth: int) -> int:
 	"""Filter byte distance (9.2): bytes per complete pixel, rounded up to one."""
-	return max(1, CHANNELS[colour_type] * bit_depth // 8)
+	return max(1, CHANNELS[color_type] * bit_depth // 8)
 
 
 def pack(samples: list[int], bit_depth: int, pad_bits: int = 0) -> bytes:
@@ -148,10 +148,10 @@ def _count(stats: dict[str, int], ftype: int, x: int, pred: int, a: int, b: int,
 			bump("paeth_tie")
 
 
-def extract_pass(rows: list[list[int]], width: int, colour_type: int, p: int) -> list[list[int]]:
+def extract_pass(rows: list[list[int]], width: int, color_type: int, p: int) -> list[list[int]]:
 	"""Reduced image p (0..6) of an Adam7 image given full rows of samples."""
 	xs, ys, xstep, ystep = ADAM7[p]
-	nch = CHANNELS[colour_type]
+	nch = CHANNELS[color_type]
 	out = []
 	for y in range(ys, len(rows), ystep):
 		row = rows[y]
@@ -159,22 +159,22 @@ def extract_pass(rows: list[list[int]], width: int, colour_type: int, p: int) ->
 	return out
 
 
-def serialize(rows, width: int, height: int, colour_type: int, bit_depth: int, interlace: int = 0,
+def serialize(rows, width: int, height: int, color_type: int, bit_depth: int, interlace: int = 0,
 		filter_for=lambda p, y: 0, pad_bits: int = 0, stats: dict[str, int] | None = None) -> bytes:
 	"""Pixel rows -> the byte sequence that is compressed (filter byte + filtered scanline per non-empty scanline).
 
 	`filter_for(pass_index, row_index_within_pass)` chooses the filter type; pass_index is 0 for a
 	non-interlaced image. Empty passes contribute nothing (9.1). `stats` is passed to `filt`.
 	"""
-	assert len(rows) == height and all(len(r) == width * CHANNELS[colour_type] for r in rows), "rows do not match the IHDR"
-	dist = bpp(colour_type, bit_depth)
+	assert len(rows) == height and all(len(r) == width * CHANNELS[color_type] for r in rows), "rows do not match the IHDR"
+	dist = bpp(color_type, bit_depth)
 	out = bytearray()
-	passes = [(p, extract_pass(rows, width, colour_type, p)) for p in range(7)] if interlace else [(0, rows)]
+	passes = [(p, extract_pass(rows, width, color_type, p)) for p in range(7)] if interlace else [(0, rows)]
 	for p, prows in passes:
 		pw = pass_size(width, height, p)[0] if interlace else width
 		if pw == 0 or not prows:
 			continue
-		prev = bytes(row_bytes(pw, colour_type, bit_depth))
+		prev = bytes(row_bytes(pw, color_type, bit_depth))
 		for y, r in enumerate(prows):
 			cur = pack(r, bit_depth, pad_bits)
 			f = filter_for(p, y)
@@ -186,14 +186,14 @@ def serialize(rows, width: int, height: int, colour_type: int, bit_depth: int, i
 
 # ---------------------------------------------------------------- whole files
 
-def build(width: int, height: int, bit_depth: int, colour_type: int, rows, *, interlace: int = 0,
+def build(width: int, height: int, bit_depth: int, color_type: int, rows, *, interlace: int = 0,
 		filter_for=lambda p, y: 0, pad_bits: int = 0, plte: bytes | None = None, trns: bytes | None = None,
 		before_plte=(), after_plte=(), after_idat=(), compress=None, idat_sizes: list[int] | None = None,
 		iend: bytes | None = None, stats: dict[str, int] | None = None) -> bytes:
 	"""A complete datastream. `compress(raw) -> zlib bytes` defaults to zlib level 6; `idat_sizes` splits the stream."""
-	raw = serialize(rows, width, height, colour_type, bit_depth, interlace, filter_for, pad_bits, stats)
+	raw = serialize(rows, width, height, color_type, bit_depth, interlace, filter_for, pad_bits, stats)
 	z = (compress or (lambda r: zlib.compress(r, 6)))(raw)
-	parts = [ihdr(width, height, bit_depth, colour_type, interlace)] + list(before_plte)
+	parts = [ihdr(width, height, bit_depth, color_type, interlace)] + list(before_plte)
 	if plte is not None:
 		parts.append(chunk(b"PLTE", plte))
 	if trns is not None:

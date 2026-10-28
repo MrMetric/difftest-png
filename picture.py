@@ -1,32 +1,32 @@
-"""The picture every synthesized test shows, derived to each colour type and bit depth.
+"""The picture every synthesized test shows, derived to each color type and bit depth.
 
 One picture, 13 by 15 pixels, defined once as a function of position with RGBA samples in [0, 1],
-and quantized from that to every colour type and bit depth of IHDR's Table 12. The tests then differ
+and quantized from that to every color type and bit depth of IHDR's Table 12. The tests then differ
 only in representation, and a reader can see that each file shows the same thing, within what its
-colour type and depth can hold.
+color type and depth can hold.
 
 What the picture contains, and why:
 
 - A sky grading from deep blue at the top to orange at the horizon: a vertical gradient with a
   different slope in each channel, so every filter type has something to predict, channel order
   shows, and 16-bit samples carry low-order bits that an 8-bit reduction has to round or truncate.
-- A sun at the left, with a soft edge and pure white at its centre: a flat region, a few blended
+- A sun at the left, with a soft edge and pure white at its center: a flat region, a few blended
   edge pixels, and the maximum sample value.
 - Ground below, a horizontal gradient whose rows repeat: the Up filter predicts exactly and Paeth
   ties, and the rows match each other for the DEFLATE tests.
-- Two black pixels at the bottom left: with the sun's centre, pure black and pure white both occur,
+- Two black pixels at the bottom left: with the sun's center, pure black and pure white both occur,
   so a tRNS naming 0 or the maximum sample names a pixel at every depth.
-- Alpha, in the colour types that have it: opaque except the four rightmost columns, which fade to
-  fully transparent at the right edge. The transparent column keeps its colour, so what a decoder
-  does with colour under alpha 0 can be seen. Crops taken from the top left are opaque.
+- Alpha, in the color types that have it: opaque except the four rightmost columns, which fade to
+  fully transparent at the right edge. The transparent column keeps its color, so what a decoder
+  does with color under alpha 0 can be seen. Crops taken from the top left are opaque.
 
 13 is the smallest width and height at which every Adam7 pass has at least two columns and two rows,
 and 13 leaves padding bits in every row at every sub-byte depth. The height is 15 rather than 13 so
 that the picture is not square and a decoder that swaps width and height is caught.
 
-Greyscale is the picture's luminance (Rec. 709 weights). The 8-bit palette holds the picture's
-colours, of which there are fewer than 256; lower palette depths are a median cut of those. Alpha is
-carried by the greyscale+alpha and truecolour+alpha types only; the other types are opaque, and a
+Grayscale is the picture's luminance (Rec. 709 weights). The 8-bit palette holds the picture's
+colors, of which there are fewer than 256; lower palette depths are a median cut of those. Alpha is
+carried by the grayscale+alpha and truecolor+alpha types only; the other types are opaque, and a
 tRNS is added by the tests that are about it.
 """
 from dataclasses import dataclass
@@ -40,7 +40,7 @@ COMBOS = [(ct, bd) for ct, bds in DEPTHS.items() for bd in bds]
 SKY_TOP = (0.05, 0.12, 0.50)
 SKY_HORIZON = (0.95, 0.52, 0.12)
 SUN_EDGE = (1.0, 0.86, 0.40)
-SUN_CENTRE = (1.0, 1.0, 1.0)
+SUN_CENTER = (1.0, 1.0, 1.0)
 SUN_X, SUN_Y, SUN_R = 4.0, 4.0, 2.4
 GROUND_LEFT = (0.10, 0.38, 0.08)
 GROUND_RIGHT = (0.48, 0.78, 0.26)
@@ -78,7 +78,7 @@ def picture(x: int, y: int) -> tuple[float, float, float, float]:
 		cover = sun_coverage(x, y)
 		if cover:
 			d = ((x - SUN_X) ** 2 + (y - SUN_Y) ** 2) ** 0.5
-			sun = lerp(SUN_CENTRE, SUN_EDGE, min(d / SUN_R, 1.0))
+			sun = lerp(SUN_CENTER, SUN_EDGE, min(d / SUN_R, 1.0))
 			rgb = lerp(rgb, sun, cover)
 	alpha = min(1.0, (W - 1 - x) / FADE)
 	return (rgb[0], rgb[1], rgb[2], alpha)
@@ -96,17 +96,17 @@ def quantize(v: float, bits: int) -> int:
 
 @dataclass(frozen=True)
 class Variant:
-	"""The picture at one colour type and depth: `rows` holds each row's samples, channels interleaved."""
-	colour_type: int
+	"""The picture at one color type and depth: `rows` holds each row's samples, channels interleaved."""
+	color_type: int
 	bit_depth: int
 	width: int
 	height: int
 	rows: tuple[tuple[int, ...], ...]
-	palette: tuple[tuple[int, int, int], ...] | None  # colour type 3 only
+	palette: tuple[tuple[int, int, int], ...] | None  # color type 3 only
 
 	@property
 	def name(self) -> str:
-		return f"{CT_NAME[self.colour_type]}{self.bit_depth}"
+		return f"{CT_NAME[self.color_type]}{self.bit_depth}"
 
 	def rgba16(self) -> list[list[tuple[int, int, int, int]]]:
 		"""The pixels a decoder must produce, as RGBA with 16 bits per sample (every maxval divides 65535)."""
@@ -115,7 +115,7 @@ class Variant:
 		for row in self.rows:
 			px = []
 			for i in range(self.width):
-				match self.colour_type:
+				match self.color_type:
 					case 0:
 						g = row[i] * k
 						px.append((g, g, g, 65535))
@@ -142,7 +142,7 @@ def median_cut(pixels: list[tuple[int, int, int]], n: int) -> list[list[tuple[in
 	while len(boxes) < n:
 		spans = [(max(max(p[c] for p in b) - min(p[c] for p in b) for c in range(3)), -i) for i, b in enumerate(boxes)]
 		span, neg_i = max(spans)
-		assert span > 0, "fewer distinct colours than palette entries"
+		assert span > 0, "fewer distinct colors than palette entries"
 		box = boxes[-neg_i]
 		axis = max(range(3), key=lambda c: max(p[c] for p in box) - min(p[c] for p in box))
 		box.sort(key=lambda p: (p[axis], p))
@@ -155,13 +155,13 @@ def mean(box: list[tuple[int, int, int]], c: int) -> int:
 	return int(sum(p[c] for p in box) / len(box) + 0.5)
 
 
-def variant(colour_type: int, bit_depth: int, width: int = W, height: int = H) -> Variant:
-	"""The picture's top-left `width` by `height` at this colour type and depth."""
-	assert bit_depth in DEPTHS[colour_type], (colour_type, bit_depth)
+def variant(color_type: int, bit_depth: int, width: int = W, height: int = H) -> Variant:
+	"""The picture's top-left `width` by `height` at this color type and depth."""
+	assert bit_depth in DEPTHS[color_type], (color_type, bit_depth)
 	assert 0 < width <= W and 0 < height <= H, (width, height)
 	pix = [[picture(x, y) for x in range(width)] for y in range(height)]
 	palette = None
-	match colour_type:
+	match color_type:
 		case 0:
 			rows = [[quantize(luminance(*p[:3]), bit_depth) for p in row] for row in pix]
 		case 2:
@@ -175,7 +175,7 @@ def variant(colour_type: int, bit_depth: int, width: int = W, height: int = H) -
 			whole = [[picture(x, y) for x in range(W)] for y in range(H)]
 			rgb8 = [[(quantize(p[0], 8), quantize(p[1], 8), quantize(p[2], 8)) for p in row] for row in whole]
 			if bit_depth == 8:
-				entries = list(dict.fromkeys(p for row in rgb8 for p in row))  # the picture's colours, in raster order
+				entries = list(dict.fromkeys(p for row in rgb8 for p in row))  # the picture's colors, in raster order
 				assert len(entries) <= 256, len(entries)
 				index = {p: i for i, p in enumerate(entries)}
 			else:
@@ -187,5 +187,5 @@ def variant(colour_type: int, bit_depth: int, width: int = W, height: int = H) -
 			palette = tuple(entries)
 			assert set(index.values()) == set(range(len(entries))), "an unused palette entry in the whole picture"
 		case _:
-			raise AssertionError(colour_type)
-	return Variant(colour_type, bit_depth, width, height, tuple(tuple(r) for r in rows), palette)
+			raise AssertionError(color_type)
+	return Variant(color_type, bit_depth, width, height, tuple(tuple(r) for r in rows), palette)

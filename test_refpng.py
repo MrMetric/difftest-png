@@ -41,9 +41,9 @@ def chunk(name, body):
 	return struct.pack(">I", len(body)) + name + body + struct.pack(">I", zlib.crc32(name + body))
 
 
-def png(metadata=(), *, raw=b"\0\x12\x34\x56", stream=None, width=1, height=1, depth=8, colour=2,
+def png(metadata=(), *, raw=b"\0\x12\x34\x56", stream=None, width=1, height=1, depth=8, color=2,
 		interlace=0, after=()):
-	ihdr = struct.pack(">IIBBBBB", width, height, depth, colour, 0, 0, interlace)
+	ihdr = struct.pack(">IIBBBBB", width, height, depth, color, 0, 0, interlace)
 	return (refpng.SIGNATURE + chunk(b"IHDR", ihdr) + b"".join(chunk(*c) for c in metadata)
 		+ chunk(b"IDAT", zlib.compress(raw) if stream is None else stream)
 		+ b"".join(chunk(*c) for c in after) + chunk(b"IEND", b""))
@@ -143,7 +143,7 @@ def test_diagnostic_invariant():
 		assert "shared diagnostic sink" in str(e)
 	else:
 		raise AssertionError("inflate accepted a coverage-only sink")
-	# Every literal coverage call in the implementation agrees with the catalogue.
+	# Every literal coverage call in the implementation agrees with the catalog.
 	for path in ("refpng.py", "inflate.py", "pngfields.py", "pngdiagnostics.py"):
 		for node in ast.walk(ast.parse((ROOT / path).read_text())):
 			if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "reach":
@@ -204,7 +204,7 @@ SINGLETON_STREAM = bytes.fromhex("7801000200fdff007f05c0010500000000a0ffaf030081
 def test_audit_singleton():
 	assert zlib.decompress(SINGLETON_STREAM) == b"\0\x7f"
 	check(SINGLETON_PNG, pixels=(127, 127, 127, 255), warning="rfc1951-3.2.2#one-literal-code")
-	check(png(stream=SINGLETON_STREAM, colour=0), pixels=(127, 127, 127, 255))
+	check(png(stream=SINGLETON_STREAM, color=0), pixels=(127, 127, 127, 255))
 
 
 def test_audit_uint31():
@@ -354,7 +354,7 @@ def long_distance_stream():
 
 def test_audit_window(*, include_fixture=True):
 	raw, stream = long_distance_stream()
-	img, record = check(png(stream=stream, width=1023, colour=0), warning="rfc1950-2.2#window-exceeded")
+	img, record = check(png(stream=stream, width=1023, color=0), warning="rfc1950-2.2#window-exceeded")
 	assert tuple(img.samples[0::4]) == tuple(raw[1:])
 	assert expectations(record) == both("may-reject")
 	if include_fixture:
@@ -363,17 +363,17 @@ def test_audit_window(*, include_fixture=True):
 		check(fixture.read_bytes(), warning="rfc1950-2.2#window-exceeded")
 	# A subsequent bad Adler cannot erase the recovered window fault; the complete data are decoded.
 	bad = stream[:-1] + bytes((stream[-1] ^ 1,))
-	img, _ = check(png(stream=bad, width=1023, colour=0), warning="rfc1950-2.2#window-exceeded", error="rfc1950-2.3#adler32")
+	img, _ = check(png(stream=bad, width=1023, color=0), warning="rfc1950-2.2#window-exceeded", error="rfc1950-2.3#adler32")
 	assert tuple(img.samples[0::4]) == tuple(raw[1:])
 
 
 def test_exit_paths():
 	# Truncation is recorded before a later invalid filter or short-row rejection can interrupt decoding.
 	for raw, fatal in ((b"\x05\x7f", "9.2#filter-types"), (b"\0", "13.1#data-short")):
-		_, record = check(png(stream=zlib.compress(raw)[:-4], colour=0), warning="10.1#zlib-check", no_image=fatal)
+		_, record = check(png(stream=zlib.compress(raw)[:-4], color=0), warning="10.1#zlib-check", no_image=fatal)
 		assert "rfc1950-2.2#end-in-adler32" in record.reached
 	# Both the API and CLI preserve accumulated faults on unexpected exceptions, including MemoryError.
-	data = png(stream=zlib.compress(b"\0\x7f")[:-4], colour=0)
+	data = png(stream=zlib.compress(b"\0\x7f")[:-4], color=0)
 	original = refpng._scanlines
 	with tempfile.TemporaryDirectory() as td:
 		src, dest = Path(td) / "in.png", Path(td) / "out.pam"
@@ -399,7 +399,7 @@ def test_exit_paths():
 		with redirect_stdout(out):
 			assert refpng.main([str(src), str(dest)]) == 0
 		assert out.getvalue().endswith("OK 1 1 4 8\n") and dest.exists()
-		bad = png(stream=zlib.compress(b"\x05\x7f")[:-4], colour=0)
+		bad = png(stream=zlib.compress(b"\x05\x7f")[:-4], color=0)
 		src.write_bytes(bad)
 		out = io.StringIO()
 		with redirect_stdout(out):
@@ -431,7 +431,7 @@ def test_content_types():
 
 def test_owner_policies():
 	# The sample mask is required under both editions.
-	check(png(((b"tRNS", b"\xff\x7f"), (b"bKGD", b"\xff\x7f")), raw=b"\0\x7f", colour=0),
+	check(png(((b"tRNS", b"\xff\x7f"), (b"bKGD", b"\xff\x7f")), raw=b"\0\x7f", color=0),
 		pixels=(127, 127, 127, 0), clean=True)
 	# CRC failure: the first interpretation drops ancillary tRNS; the second uses it as stored, like a recomputed CRC.
 	valid = png(((b"tRNS", b"\0\x12\0\x34\0\x56"),))
@@ -449,30 +449,30 @@ def test_owner_policies():
 
 
 def test_small_pixels():
-	# Independent sample packing across every legal colour/depth combination, and all five inverse filters.
-	for colour, depths in ((0, (1, 2, 4, 8, 16)), (2, (8, 16)), (3, (1, 2, 4, 8)), (4, (8, 16)), (6, (8, 16))):
+	# Independent sample packing across every legal color/depth combination, and all five inverse filters.
+	for color, depths in ((0, (1, 2, 4, 8, 16)), (2, (8, 16)), (3, (1, 2, 4, 8)), (4, (8, 16)), (6, (8, 16))):
 		for depth in depths:
-			nch = refpng.CHANNELS[colour]
+			nch = refpng.CHANNELS[color]
 			maxval = (1 << depth) - 1
 			width, height = 3, 2
-			rng = random.Random(colour * 100 + depth)
+			rng = random.Random(color * 100 + depth)
 			rows = [[rng.randrange(maxval + 1) for _ in range(width * nch)] for _ in range(height)]
-			if colour == 3:
+			if color == 3:
 				rows = [[v % min(4, maxval + 1) for v in row] for row in rows]
 			palette = bytes((13, 27, 53, 81, 127, 195, 0, 255, 99, 255, 11, 7))[:3 * min(4, maxval + 1)]
-			metadata = ((b"PLTE", palette),) if colour == 3 else ()
+			metadata = ((b"PLTE", palette),) if color == 3 else ()
 			pixels = []
 			for row in rows:
 				for x in range(width):
 					v = row[x * nch:(x + 1) * nch]
 					outmax = 65535 if depth == 16 else 255
-					if colour == 3:
+					if color == 3:
 						pixels.extend((*palette[3 * v[0]:3 * v[0] + 3], 255))
-					elif colour in (0, 4):
+					elif color in (0, 4):
 						g = v[0] * (outmax // maxval)
-						pixels.extend((g, g, g, v[1] if colour == 4 else outmax))
+						pixels.extend((g, g, g, v[1] if color == 4 else outmax))
 					else:
-						pixels.extend((*v[:3], v[3] if colour == 6 else outmax))
+						pixels.extend((*v[:3], v[3] if color == 6 else outmax))
 			for interlace in (0, 1):
 				passes = refpng.ADAM7 if interlace else ((0, 0, 1, 1),)
 				for filter_type in range(5):
@@ -502,7 +502,7 @@ def test_small_pixels():
 								encoded.append((value - pred) & 255)
 							raw += bytes((filter_type,)) + encoded
 							prev = line
-					check(png(metadata, raw=bytes(raw), width=width, height=height, colour=colour, depth=depth, interlace=interlace),
+					check(png(metadata, raw=bytes(raw), width=width, height=height, color=color, depth=depth, interlace=interlace),
 						pixels=pixels, clean=True)
 
 
@@ -529,7 +529,7 @@ def require_memory_scope():
 
 
 def load_baseline(directory):
-	"""Isolate the baseline modules, using its own recorder when its catalogue is supplied."""
+	"""Isolate the baseline modules, using its own recorder when its catalog is supplied."""
 	names = ("inflate", "pngfields", "refpng")
 	if (directory / "pngdiagnostics.py").exists() and (directory / "spec/clauses.tsv").exists():
 		names = ("pngdiagnostics", *names)
@@ -821,9 +821,9 @@ def test_corrupt_image_tail():
 			assert expectations(record) == both("may-reject")
 		check(png(stream=stream(b"\0\x12\x34", tail)), no_image=cause)
 	# A 2x2 one-bit Adam7 image has three nonempty passes and six bytes, including their filters.
-	check(png(stream=stream(b"\0\0\0\0\0\0", b"\x07"), colour=0, depth=1, width=2, height=2, interlace=1),
+	check(png(stream=stream(b"\0\0\0\0\0\0", b"\x07"), color=0, depth=1, width=2, height=2, interlace=1),
 		warning="10.1#zlib-check", pixels=(0, 0, 0, 255) * 4)
-	check(png(stream=stream(b"\0\0\0\0\0", b"\x07"), colour=0, depth=1, width=2, height=2, interlace=1),
+	check(png(stream=stream(b"\0\0\0\0\0", b"\x07"), color=0, depth=1, width=2, height=2, interlace=1),
 		no_image="rfc1951-3.2.3#btype-reserved")
 	# A wrong Adler-32 is not a fault after the image: it is recorded at its own clause's level (reject).
 	valid = zlib.compress(b"\0\x12\x34\x56")
@@ -1129,35 +1129,35 @@ def test_idot():
 
 def test_interpretations():
 	"""Every reading the specification leaves open comes from one parse, each under its choices."""
-	grey = dict(raw=b"\0\x12", colour=0)
+	gray = dict(raw=b"\0\x12", color=0)
 	header = 33  # signature and IHDR chunk
 	# Several tRNS chunks: the specification asks for recovery and names none to keep.
-	data = png(((b"tRNS", b"\0\x12"), (b"tRNS", b"\0\x34")), **grey)
+	data = png(((b"tRNS", b"\0\x12"), (b"tRNS", b"\0\x34")), **gray)
 	check(data, warning="5.6#single-ancillary", choices=((("trns", "first"),), (("trns", "last"),)))
 	assert interpretations(data) == {(("trns", "first"),): (18, 18, 18, 0), (("trns", "last"),): (18, 18, 18, 255)}
 	# A tRNS chunk with a bad CRC is dropped (13.1 recommends it) or used as stored.
-	data = png(**grey)
+	data = png(**gray)
 	data = data[:header] + corrupt_crc(b"tRNS", b"\0\x12") + data[header:]
 	check(data, warning="13.1#crc-ancillary", choices=((("crc", "dropped"),), (("crc", "ignored"),)))
 	assert interpretations(data) == {(("crc", "dropped"),): (18, 18, 18, 255), (("crc", "ignored"),): (18, 18, 18, 0)}
 	# Decisions nest rather than multiply: a dropped chunk leaves one tRNS, so no trns choice; nor is it a duplicate.
-	data = png(((b"tRNS", b"\0\x34"),), **grey)
+	data = png(((b"tRNS", b"\0\x34"),), **gray)
 	data = data[:header] + corrupt_crc(b"tRNS", b"\0\x12") + data[header:]
 	_, record = check(data, choices=((("crc", "dropped"),), (("crc", "ignored"), ("trns", "first")), (("crc", "ignored"), ("trns", "last"))))
 	assert "5.6#single-ancillary" not in record.reached
 	assert interpretations(data) == {(("crc", "dropped"),): (18, 18, 18, 255), (("crc", "ignored"), ("trns", "first")): (18, 18, 18, 0),
 		(("crc", "ignored"), ("trns", "last")): (18, 18, 18, 255)}
 	# A tRNS occurrence that is ignored gives no transparency: the first is misplaced here, the last is used.
-	data = png(((b"PLTE", b"\x12\x34\x56"), (b"tRNS", b"\0")), raw=b"\0\0", colour=3)
+	data = png(((b"PLTE", b"\x12\x34\x56"), (b"tRNS", b"\0")), raw=b"\0\0", color=3)
 	data = data[:header] + chunk(b"tRNS", b"\0") + data[header:]
 	check(data, warning="5.6#after-plte", choices=((("trns", "first"),), (("trns", "last"),)), pixels=(18, 52, 86, 255))
 	assert interpretations(data)[(("trns", "last"),)] == (18, 52, 86, 0)
-	# Two palettes in an indexed-colour image; the out-of-range check follows the palette looked up.
-	data = png(((b"PLTE", b"\1\2\3"), (b"PLTE", b"\4\5\6\7\x08\x09")), raw=b"\0\1", colour=3)
+	# Two palettes in an indexed-color image; the out-of-range check follows the palette looked up.
+	data = png(((b"PLTE", b"\1\2\3"), (b"PLTE", b"\4\5\6\7\x08\x09")), raw=b"\0\1", color=3)
 	check(data, warning="11.2.2#single", error="11.2.2#index-in-range", choices=((("plte", "first"),), (("plte", "last"),)))
 	assert interpretations(data) == {(("plte", "first"),): (0, 0, 0, 255), (("plte", "last"),): (7, 8, 9, 255)}
 	# A palette after IDAT is not one a decoder can keep.
-	check(png(((b"PLTE", b"\x12\x34\x56"),), raw=b"\0\0", colour=3, after=((b"PLTE", b"\0\0\0"),)),
+	check(png(((b"PLTE", b"\x12\x34\x56"),), raw=b"\0\0", color=3, after=((b"PLTE", b"\0\0\0"),)),
 		warning="11.2.2#single", pixels=(18, 52, 86, 255))
 	# An unknown critical chunk after IDAT: decoded as if it were absent.
 	check(png(after=((b"CRIT", b"x"),)), error="5.4#unknown-critical", choices=((("critical", "ignored"),),), pixels=(18, 52, 86, 255))
@@ -1174,7 +1174,7 @@ def test_interpretations():
 		data = bytearray(png())
 		data[position] ^= 1
 		check(bytes(data), warning="13.1#crc-critical", choices=((("crc", "ignored"),),), pixels=(18, 52, 86, 255))
-	data = png(((b"PLTE", b"\x12\x34\x56"),), raw=b"\0\0", colour=3)
+	data = png(((b"PLTE", b"\x12\x34\x56"),), raw=b"\0\0", color=3)
 	data = data[:header] + corrupt_crc(b"PLTE", b"\x12\x34\x56") + data[header + 15:]
 	check(data, warning="13.1#crc-critical", choices=((("crc", "ignored"),),), pixels=(18, 52, 86, 255))
 	# A wrong Adler-32 is recorded at its clause's level, and the complete data are decoded.
@@ -1183,7 +1183,7 @@ def test_interpretations():
 	assert "10.1#deflate-valid" in record.reached
 	assert expectations(record) == both("must-reject")
 	# A palette index past PLTE is opaque black; both texts' clauses are recorded.
-	_, record = check(png(((b"PLTE", b"\x12\x34\x56"),), raw=b"\0\x01", colour=3),
+	_, record = check(png(((b"PLTE", b"\x12\x34\x56"),), raw=b"\0\x01", color=3),
 		error="11.2.2#index-in-range", warning="13.1#index-opaque-black", pixels=(0, 0, 0, 255))
 	# The one contradiction between the texts: an error under the 2nd edition, recovery under the 3rd.
 	assert expectations(record) == {"2": "must-reject", "3": "recover"}
@@ -1194,7 +1194,7 @@ def test_interpretations():
 	check(data[:-12 - 2], warning="13.1#end-of-stream", pixels=(18, 52, 86, 255))
 	check(data[:-6], warning="13.1#end-of-stream", pixels=(18, 52, 86, 255))
 	# The CLI writes the first interpretation and names every interpretation with its digest, in order.
-	data = png(((b"tRNS", b"\0\x12"), (b"tRNS", b"\0\x34")), **grey)
+	data = png(((b"tRNS", b"\0\x12"), (b"tRNS", b"\0\x34")), **gray)
 	with tempfile.TemporaryDirectory() as td:
 		src, dest = Path(td) / "in.png", Path(td) / "out.pam"
 		src.write_bytes(data)

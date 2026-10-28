@@ -64,8 +64,8 @@ assert len(ICC_RGB) == 132
 
 def crop(v: Variant, width: int, height: int) -> Variant:
 	"""The top-left width x height of v: the same samples and palette, since the picture is quantized per pixel."""
-	nch = B.CHANNELS[v.colour_type]
-	c = picture.variant(v.colour_type, v.bit_depth, width, height)
+	nch = B.CHANNELS[v.color_type]
+	c = picture.variant(v.color_type, v.bit_depth, width, height)
 	assert c == replace(v, width=width, height=height, rows=tuple(r[:width * nch] for r in v.rows[:height])), (v.name, width, height)
 	return c
 
@@ -81,7 +81,7 @@ def plte_body(v: Variant) -> bytes:
 
 def samples(v: Variant) -> list[list[tuple[int, ...]]]:
 	"""Each pixel's samples, grouped per pixel."""
-	nch = B.CHANNELS[v.colour_type]
+	nch = B.CHANNELS[v.color_type]
 	return [[row[i * nch:(i + 1) * nch] for i in range(v.width)] for row in v.rows]
 
 
@@ -90,7 +90,7 @@ def pixels(v: Variant, *, trns: bytes | None = None, palette: tuple[tuple[int, i
 	the bit depth; alpha 0 where a pixel matches; palette alpha per entry) and, for an indexed image,
 	`palette` instead of v's (13.1: an index past the last entry is opaque black)."""
 	out = v.rgba16()
-	if v.colour_type == 3:
+	if v.color_type == 3:
 		pal = entries(v) if palette is None else palette
 		alpha = list(trns or b"")
 		out = [[(0, 0, 0, 65535) if i >= len(pal) else (pal[i][0] * 257, pal[i][1] * 257, pal[i][2] * 257,
@@ -101,10 +101,10 @@ def pixels(v: Variant, *, trns: bytes | None = None, palette: tuple[tuple[int, i
 	assert palette is None
 	if trns is None:
 		return out
-	assert v.colour_type in (0, 2), "tRNS applies to grayscale and truecolor only"
+	assert v.color_type in (0, 2), "tRNS applies to grayscale and truecolor only"
 	mask = (1 << v.bit_depth) - 1
 	key = tuple(s & mask for s in struct.unpack(f">{len(trns) // 2}H", trns))
-	assert len(key) == B.CHANNELS[v.colour_type], trns
+	assert len(key) == B.CHANNELS[v.color_type], trns
 	return [[(r, g, b, 0) if s == key else (r, g, b, a) for (r, g, b, a), s in zip(prow, srow)]
 		for prow, srow in zip(out, samples(v))]
 
@@ -133,7 +133,7 @@ def trns_for(value: tuple[int, ...]) -> bytes:
 @functools.cache
 def raw(v: Variant, ftype: int = 0) -> bytes:
 	"""v serialized non-interlaced with filter `ftype` on every scanline."""
-	return B.serialize(v.rows, v.width, v.height, v.colour_type, v.bit_depth, filter_for=lambda p, y: ftype)
+	return B.serialize(v.rows, v.width, v.height, v.color_type, v.bit_depth, filter_for=lambda p, y: ftype)
 
 
 @functools.cache
@@ -145,7 +145,7 @@ def image(v: Variant, **kw) -> bytes:
 	"""pngbuild.build for v, with v's palette as PLTE unless `plte` is given."""
 	if v.palette is not None:
 		kw.setdefault("plte", plte_body(v))
-	return B.build(v.width, v.height, v.bit_depth, v.colour_type, v.rows, **kw)
+	return B.build(v.width, v.height, v.bit_depth, v.color_type, v.rows, **kw)
 
 
 def png(v: Variant = RGB8, *, ihdr: bytes | None = None, before=(), plte: list[bytes] | None = None, after_plte=(),
@@ -154,7 +154,7 @@ def png(v: Variant = RGB8, *, ihdr: bytes | None = None, before=(), plte: list[b
 	"""v as IHDR, `before`, PLTE (v's own when `plte` is None; the chunks given otherwise, [] for none),
 	`after_plte`, IDAT (one chunk of `z`, default zlib level 6 of filter None, or the chunks `idats`),
 	`after_idat`, `iend` (None for none), then `trailer` bytes."""
-	parts = [ihdr or B.ihdr(v.width, v.height, v.bit_depth, v.colour_type)] + list(before)
+	parts = [ihdr or B.ihdr(v.width, v.height, v.bit_depth, v.color_type)] + list(before)
 	if plte is None:
 		plte = [B.chunk(b"PLTE", plte_body(v))] if v.palette is not None else []
 	parts += plte + list(after_plte)
@@ -630,7 +630,7 @@ def ihdr(c: Corpus) -> None:
 		c.emit(f"ihdr-{picture.CT_NAME[ct]}-bd{bd}", B.assemble(parts), "must-reject", "11.2.1#combination" if bd in (1, 2, 4, 8, 16) else "11.2.1#bit-depth",
 			f"color type {ct} at bit depth {bd} is not an allowed combination; {layout}", None)
 	for ct in (1, 5, 7):
-		c.emit(f"ihdr-ct{ct}", png(G8, ihdr=ihdr_raw(W, H, 8, ct)), "must-reject", "11.2.1#colour-type",
+		c.emit(f"ihdr-ct{ct}", png(G8, ihdr=ihdr_raw(W, H, 8, ct)), "must-reject", "11.2.1#color-type",
 			f"color type {ct} is undefined; data is 8-bit grayscale", None)
 	z = zdata(RGB8)
 	c.emit("ihdr-not-first", B.assemble([B.chunk(b"tEXt", b"k\0v"), B.ihdr(W, H, 8, 2), B.chunk(b"IDAT", z), IEND]), "must-reject", "11.2#ihdr-first",
@@ -649,10 +649,10 @@ def plte(c: Corpus) -> None:
 	pl = lambda body, **kw: B.chunk(b"PLTE", body, **kw)
 	c.emit("plte-len-not-mult3-pal", png(P8, plte=[pl(pb + b"\x80")]), "must-reject", "11.2.2#invalid-indexed",
 		f"palette length {len(pb) + 1} in an indexed image", None)
-	c.emit("plte-len-not-mult3-rgb", png(before=[pl(pb + b"\x80")]), "recover", "11.2.2#invalid-truecolour",
+	c.emit("plte-len-not-mult3-rgb", png(before=[pl(pb + b"\x80")]), "recover", "11.2.2#invalid-truecolor",
 		f"palette length {len(pb) + 1} in a truecolor image, a suggested palette")
 	c.emit("plte-empty-pal", png(P8, plte=[pl(b"")]), "must-reject", "11.2.2#invalid-indexed", "zero-length PLTE in an indexed image", None)
-	c.emit("plte-empty-rgb", png(before=[pl(b"")]), "recover", "11.2.2#invalid-truecolour", "zero-length PLTE in a truecolor image")
+	c.emit("plte-empty-rgb", png(before=[pl(b"")]), "recover", "11.2.2#invalid-truecolor", "zero-length PLTE in a truecolor image")
 	p1 = TAGS["p1"]
 	extra = ((0, 0, 0), (255, 255, 255))
 	assert not set(extra) & set(entries(p1))
@@ -663,7 +663,7 @@ def plte(c: Corpus) -> None:
 	c.emit("plte-in-gray", png(G8, before=[pl(pb)]), "may-reject", "11.2.2#forbidden", "PLTE in a grayscale image", G8)
 	c.emit("plte-in-graya", png(GA8, before=[pl(pb)]), "may-reject", "11.2.2#forbidden", "PLTE in a grayscale+alpha image", GA8)
 	c.emit("plte-after-idat-pal", png(P8, plte=[], after_idat=[pl(pb)]), "must-reject", "11.2.2#required", "indexed image whose PLTE follows IDAT", None)
-	c.emit("plte-after-idat-rgb", png(after_idat=[pl(pb)]), "recover", "11.2.2#invalid-truecolour", "truecolor image with a suggested palette after IDAT")
+	c.emit("plte-after-idat-rgb", png(after_idat=[pl(pb)]), "recover", "11.2.2#invalid-truecolor", "truecolor image with a suggested palette after IDAT")
 	c.emit("plte-dup-rgb", png(before=[pl(pb), pl(pb[::-1])]), "may-reject", "11.2.2#single", "two suggested palettes in a truecolor image")
 	c.emit("plte-crc-bad-rgb", png(before=[pl(pb, crc_value=1)]), "may-reject", "13.1#crc-critical", "bad CRC on an unused suggested palette")
 	c.emit("plte-crc-bad-pal", png(P8, plte=[pl(pb, crc_value=1)]), "may-reject", "13.1#crc-critical", "bad CRC on the palette of an indexed image", P8)
@@ -734,7 +734,7 @@ def trns(c: Corpus) -> None:
 	for tag in ("g1", "g2", "g4", "g8", "g16", "rgb8", "rgb16"):
 		v = TAGS[tag]
 		top = (1 << v.bit_depth) - 1
-		n = B.CHANNELS[v.colour_type]
+		n = B.CHANNELS[v.color_type]
 		cases = [("black", (0,) * n), ("white", (top,) * n)] + ([("mid", mid(v))] if tag != "g1" else [])
 		for which, value in cases:
 			assert occurs(v, value), (tag, which, value)
@@ -1057,7 +1057,7 @@ def fdat(seq: int, data: bytes) -> bytes:
 def frame_z(v: Variant, w: int, h: int) -> bytes:
 	"""The zlib stream of a frame showing v's top-left w x h, filter None: its own stream, not IDAT's."""
 	t = crop(v, w, h)
-	return zlib.compress(B.serialize(t.rows, w, h, t.colour_type, t.bit_depth), 6)
+	return zlib.compress(B.serialize(t.rows, w, h, t.color_type, t.bit_depth), 6)
 
 
 def animation(v: Variant, frames: list[tuple[int, int, int, int]], *, first: dict | None = None, rest: dict | None = None,
@@ -1212,9 +1212,9 @@ def informational(c: Corpus) -> None:
 	for name, v, profile, expect3, clause, what in (
 			("iccp-rgb", RGB8, ICC_RGB, "display", "11.3.2.3#iccp", "an RGB profile on rgb8"),
 			("iccp-gray-on-gray", G8, icc_gray, "display", "11.3.2.3#iccp", "a GRAY profile on g8"),
-			("iccp-gray-on-rgb", RGB8, icc_gray, "recover", "11.3.2.3#colour-space", "a GRAY profile on rgb8"),
-			("iccp-cmyk-on-rgb", RGB8, icc_cmyk, "recover", "11.3.2.3#colour-space", "a CMYK profile on rgb8"),
-			("iccp-rgb-on-gray", G8, ICC_RGB, "recover", "11.3.2.3#colour-space", "an RGB profile on g8")):
+			("iccp-gray-on-rgb", RGB8, icc_gray, "recover", "11.3.2.3#color-space", "a GRAY profile on rgb8"),
+			("iccp-cmyk-on-rgb", RGB8, icc_cmyk, "recover", "11.3.2.3#color-space", "a CMYK profile on rgb8"),
+			("iccp-rgb-on-gray", G8, ICC_RGB, "recover", "11.3.2.3#color-space", "an RGB profile on g8")):
 		c.emit(name, png(v, before=[iccp(profile)]), expect3, clause,
 			f"iCCP holding {what}; the profile is a 132-byte header with an empty tag table, so it maps nothing", v)
 

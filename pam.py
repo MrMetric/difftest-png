@@ -53,7 +53,7 @@ def parse(data: bytes) -> PAM:
 
 
 def rgba16(p: PAM) -> np.ndarray:
-	"""RGBA, 16 bits per sample, straight alpha, no colour management: the form every output is compared in.
+	"""RGBA, 16 bits per sample, straight alpha, no color management: the form every output is compared in.
 
 	Every PNG maxval (1, 3, 15, 255, 65535) divides 65535, so those scale exactly. Other maxvals
 	(pypng rescales to the sBIT depth) round to nearest and then differ, which is the truth about them.
