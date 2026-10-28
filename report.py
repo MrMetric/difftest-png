@@ -667,11 +667,14 @@ function place() {
 	const shown = order.filter(g => g.on);
 	const seen = new Set(), n = {}, css = [`#mx{--v:${shown.length};` + shown.map((g, i) => `--c${g.i}:${i + 2};`).join("") + "}"];
 	let at = 2;
+	// The implementations table keeps unticked rows, dimmed, so its bars follow the first row of each kind; the
+	// other tables drop unticked columns, so theirs follow the first shown one.
+	const firstRow = new Set();
+	for (const g of order) if (!firstRow.has(g.k)) { firstRow.add(g.k); g.tr.classList.toggle("kb", g.k > 0); } else g.tr.classList.remove("kb");
 	for (const g of shown) {
 		const first = !seen.has(g.k) && g.k > 0;
 		seen.add(g.k);
 		n[g.k] = (n[g.k] || 0) + 1;
-		g.tr.classList.toggle("kb", first);
 		for (const cells of cellsOf.values()) cells[g.i].classList.toggle("kb", first);
 		if (first) css.push(`#mx .c${g.i}{border-left:3px solid #999}`);
 	}
