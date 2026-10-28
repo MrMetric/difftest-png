@@ -92,7 +92,7 @@ code{font-size:.9em}
 #mx thead{position:sticky;top:0;background:#151515;z-index:1}
 #mx tr{display:grid;grid-template-columns:32rem repeat(var(--v),1.6rem);content-visibility:auto;contain-intrinsic-size:auto 1.8rem}
 #mx tr[hidden]{display:none}
-#mx td,#mx th{display:block;border-width:0 1px 1px 0}
+#mx td,#mx th{display:block;border-width:0 1px 1px 0;grid-row:1}
 #mx{border-left:1px solid #444;border-top:1px solid #444}
 #mx thead th{position:static;padding:.3rem .1rem}
 #mx tr.kinds th{height:auto;line-height:1.2}
@@ -408,8 +408,13 @@ def expansion(test: dict, report: dict, classes: dict[str, str]) -> str:
 		out.append("<p>spec: " + ", ".join(refs) + "</p>")
 	outs = []
 	if test["preferred"]:
-		outs.append(f"<div>{thumb(test['preferred'], report['images'], classes)}<span>expected</span></div>")
+		# The expected picture once, with how many columns produced exactly it; only the other buckets are named.
+		exact = [b for b in test["buckets"] if b["digest"] == test["preferred"]]
+		matched = f"{exact[0]['count']} match" if exact else "none match"
+		outs.append(f"<div>{thumb(test['preferred'], report['images'], classes)}<span>expected</span><span>{matched}</span></div>")
 	for b in test["buckets"]:
+		if b["digest"] == test["preferred"]:
+			continue
 		r = report["results"][b["columns"][0]][test["id"]]
 		outs.append(f"<div>{thumb(b['digest'], report['images'], classes)}<span>{esc(bucket_label(b, r, report['ratings']))}</span>"
 			f"<span>{b['count']}: {esc(', '.join(b['columns']))}</span></div>")
