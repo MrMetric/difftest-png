@@ -54,7 +54,7 @@ th{font-weight:normal;text-align:left}
 .m td{text-align:center;padding:0;min-width:1.6rem;color:#7c7}
 .m td:first-child{text-align:left;padding:0 .4rem;color:inherit}
 .m thead th{position:sticky;top:0;background:#151515;vertical-align:bottom;padding:.3rem .1rem}
-.m thead th span{writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap}
+.m thead th .v{writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap;display:inline-block}
 .m thead tr.kinds th{text-align:center;height:1.4rem;line-height:1.4rem;padding:0 .2rem;color:#999;font-size:.8rem}
 .m thead tr:not(.kinds) th{top:1.4rem}
 th.ed{vertical-align:middle;text-align:center;padding:.2rem;color:#999;font-size:.8rem}
@@ -96,11 +96,12 @@ code{font-size:.9em}
 #mx{border-left:1px solid #444;border-top:1px solid #444}
 #mx thead th{position:static;padding:.3rem .1rem}
 #mx tr.kinds th{height:auto;line-height:1.2}
-#mx tr.kinds th span{writing-mode:vertical-rl;transform:rotate(180deg);display:inline-block;white-space:nowrap}
 #mx td:first-child,#mx th:first-child{grid-column:1}
 #mx details[open]{width:auto}
-#mx i{display:none;font-style:normal;padding:0 .1rem}
-#mx td:has(i){font-size:.75rem}
+#mx td>i{display:none;font-style:normal}
+#mx td:has(>i){padding:0}
+#mx th.ctl{display:flex;flex-direction:column;justify-content:end;align-items:start;gap:.3rem;padding:.3rem .4rem;text-align:left;font-size:.9rem}
+#mx tr.kinds th.ctl{flex-direction:row;align-items:center;flex-wrap:wrap;gap:.3rem 1rem}
 """ + "".join(f".{cls}{{{style}}}" for cls, style in SEVERITY_STYLE.items())
 
 
@@ -137,7 +138,7 @@ def boundaries(groups: list[list[dict]]) -> set[int]:
 	return {n for n in first.values() if n > 0}
 
 
-def head_rows(groups: list[list[dict]], corner: str, matrix: bool = False, corner_span: int = 1) -> str:
+def head_rows(groups: list[list[dict]], corner: str, matrix: bool = False, corner_span: int = 1, corner_top: str = "") -> str:
 	"""The two header rows of a matrix-shaped table: the kinds spanning their columns, then the names, rotated. In the
 	matrix (rows that are grids) a name cell carries its group's class c<N> and a kind cell its grid span; in a table
 	the kinds span by colspan and the first column of a kind carries `kb`."""
@@ -147,14 +148,14 @@ def head_rows(groups: list[list[dict]], corner: str, matrix: bool = False, corne
 	for n, k in enumerate(KINDS):
 		if counts[k]:
 			span = f" style='grid-column:{at}/span {counts[k]}'" if matrix else f" colspan={counts[k]}"
-			kinds.append(f"<th{span} data-k={n}{' class=kb' if n else ''}>{f'<span>{k}</span>' if matrix else k}</th>")
+			kinds.append(f"<th{span} data-k={n}{' class=kb' if n else ''}>{f'<span class=v>{k}</span>' if matrix else k}</th>")
 			at += counts[k]
 	names = []
 	for n, g in enumerate(groups):
 		cls = " ".join(c for c in (f"c{n}" if matrix else "", "kb" if n in bounds else "") if c)
-		names.append(f"<th{f' class={chr(39)}{cls}{chr(39)}' if cls else ''} title='{esc(chr(10).join(label(i) for i in g))}'><span>{esc(' · '.join(i['name'] for i in g))}</span></th>")
-	corner_td = f"<th{f' colspan={corner_span}' if corner_span > 1 else ''}>"
-	return f"<tr class=kinds>{corner_td}</th>{''.join(kinds)}</tr><tr>{corner_td}<span>{corner}</span></th>{''.join(names)}</tr>"
+		names.append(f"<th{f' class={chr(39)}{cls}{chr(39)}' if cls else ''} title='{esc(chr(10).join(label(i) for i in g))}'><span class=v>{esc(' · '.join(i['name'] for i in g))}</span></th>")
+	corner_td = f"<th{f' colspan={corner_span}' if corner_span > 1 else ''}{' class=ctl' if matrix else ''}>"
+	return f"<tr class=kinds>{corner_td}{corner_top}</th>{''.join(kinds)}</tr><tr>{corner_td}{corner if matrix else f'<span class=v>{corner}</span>'}</th>{''.join(names)}</tr>"
 
 
 def label(impl: dict) -> str:
@@ -194,21 +195,22 @@ def edition_boxes(table: str, lenses: list[str]) -> str:
 
 def edition_css(lenses: list[str]) -> str:
 	"""The editions each table shows. Tables with a block of rows per edition (tbody.e<lens>) show the ticked
-	blocks; the matrix shows, in a cell where the editions disagree, the ticked editions' glyphs (i.e<lens>); the
-	failing-only filter hides a row that passes under every ticked edition. Nothing ticked shows everything."""
+	blocks, with a bar between two shown blocks; the matrix shows, in a cell where the editions disagree, the ticked
+	editions' glyphs (td>i.e<lens>) stacked with a bar between; the failing-only filter hides a row that passes
+	under every ticked edition. Nothing ticked shows no rows."""
 	out = []
 	for t in ("viol", "feat"):
-		none = "".join(f":not(:has(#{t}-e{l}:checked))" for l in lenses)
-		out.append(f"body{none} #{t} tbody{{display:table-row-group}}")
 		out += [f"body:has(#{t}-e{l}:checked) #{t} tbody.e{l}{{display:table-row-group}}" for l in lenses]
+		out += [f"body:has(#{t}-e{a}:checked):has(#{t}-e{b}:checked) #{t} tbody.e{b} tr:first-child>*{{border-top:3px solid #999}}"
+			for a, b in zip(lenses, lenses[1:])]
+	out += [f"body:has(#mx-e{l}:checked) #mx td>.e{l}{{display:block}}" for l in lenses]
+	out += [f"body:has(#mx-e{a}:checked):has(#mx-e{b}:checked) #mx td>.e{b}{{border-top:2px solid #999}}" for a, b in zip(lenses, lenses[1:])]
 	none = "".join(f":not(:has(#mx-e{l}:checked))" for l in lenses)
-	out.append(f"body{none} #mx i{{display:inline}}")
-	out += [f"body:has(#mx-e{l}:checked) #mx .e{l}{{display:inline}}" for l in lenses]
-	for picked in range(1, 1 << len(lenses)):  # every non-empty choice of editions, and the empty one as all
+	out.append(f"body{none} #mx tbody{{display:none}}")
+	for picked in range(1, 1 << len(lenses)):  # every non-empty choice of editions
 		chosen = [l for n, l in enumerate(lenses) if picked >> n & 1]
 		cond = "".join(f":has(#mx-e{l}:checked)" if l in chosen else f":not(:has(#mx-e{l}:checked))" for l in lenses)
 		out.append(f"body:has(#f:checked){cond} #mx tr{''.join(f'.ok{l}' for l in chosen)}{{display:none}}")
-	out.append(f"body:has(#f:checked){none} #mx tr{''.join(f'.ok{l}' for l in lenses)}{{display:none}}")
 	return "".join(out)
 
 
@@ -604,17 +606,19 @@ def render(report: dict) -> str:
 
 	out.append(disclaimer())
 	out.append(legend())
-	out.append("<p class=js hidden><label>sort columns <select id=sort><option value=n>by name<option value=v>by violations"
-		"<option value=o>in impls.toml order</select></label></p>")
+	sort_select = "<label class=js hidden>sort columns <select class=sort><option value=n>by name<option value=v>by violations</select></label>"
+	out.append(f"<p>{sort_select}</p>")
 	out.append(implementations_table(report, groups))
 	out.append(violations_table(report, groups))
 	out.append(properties(report, groups))
 	out.append(feature_table(report, groups))
-	out.append(f"<h2 id=results>Results</h2>{edition_boxes('mx', lenses)}<p><label><input type=checkbox id=f> show only tests some implementation fails</label></p>"
-		"<p class=js hidden><input id=q type=search placeholder='id, note or family'> "
+	# The matrix's controls sit in its sticky header: editions and the failing-only filter in the top corner, the
+	# script's sort, search and row filters in the tall corner under it.
+	top = edition_boxes("mx", lenses).replace("<p class=eds>", "<span>").replace("</p>", "</span>") + "<label><input type=checkbox id=f> only tests some implementation fails</label>"
+	filters = (f"{sort_select}<input class=js hidden id=q type=search placeholder='id, note or family'><span class=js hidden>"
 		+ " ".join(f"<label><input type=checkbox checked data-e={e}> {e}</label>" for e in report["expectations"][::-1])
-		+ " <select id=fam><option value=''>every family" + "".join(f"<option>{esc(f)}" for f in families(report)) + "</select></p>")
-	out.append(f"<table class=m id=mx><thead>{head_rows(groups, 'test', matrix=True)}</thead><tbody>")
+		+ "</span><select class=js hidden id=fam><option value=''>every family" + "".join(f"<option>{esc(f)}" for f in families(report)) + "</select>")
+	out.append(f"<h2 id=results>Results</h2><table class=m id=mx><thead>{head_rows(groups, filters, matrix=True, corner_top=top)}</thead><tbody>")
 	for t in tests:
 		rs = [report["results"][g[0]["name"]][t["id"]] for g in groups]
 		ok = "".join(f" ok{lens}" for lens in lenses if all(r["severity"][lens] == "pass" for r in rs)).strip()
@@ -638,7 +642,7 @@ const cellsOf = new Map([...$("#viol tr:not(.kinds)"), ...$("#feat tr:not(.kinds
 const groups = sumRows.map((tr, i) => ({i, tr, name: tr.dataset.n, o: +tr.dataset.o, k: +tr.dataset.k, on: true}));
 const byTr = new Map(groups.map(g => [g.tr, g]));
 const cmp = (a, b) => a < b ? -1 : a > b ? 1 : 0;
-const sortBy = byId("sort"), dyn = byId("dyn");
+const sorts = $(".sort"), sortBy = sorts[0], dyn = byId("dyn");
 const ticked = t => $(`[id^=${t}-e]`).filter(e => e.checked).map(e => e.id.slice(-1));
 const edition = () => { const e = ticked("viol"); return e.includes("3") || !e.length ? "3" : e[0]; };
 function sort() {
@@ -646,7 +650,6 @@ function sort() {
 	const key = {
 		v: (a, b) => d(a)["m" + L] - d(b)["m" + L] || d(a)["s" + L] - d(b)["s" + L] || cmp(a.name, b.name),
 		n: (a, b) => cmp(a.name, b.name),
-		o: (a, b) => a.o - b.o,
 	}[sortBy.value];
 	const order = [...groups].sort((a, b) => a.k - b.k || key(a, b));
 	for (const g of order) g.tr.parentNode.append(g.tr);
@@ -687,9 +690,8 @@ const rows = $("#mx tbody tr");
 const text = rows.map(r => [r.querySelector("summary span"), r.querySelector(".note")].map(e => e.textContent).join(" ").concat(" ", r.dataset.f).toLowerCase());
 const q = byId("q"), fam = byId("fam"), exp = $("[data-e]");
 function filter() {
-	const eds = ticked("mx"), all = ["2", "3"], s = q.value.toLowerCase(), on = new Set(exp.filter(e => e.checked).map(e => e.dataset.e));
-	const shown = eds.length ? eds : all;
-	rows.forEach((r, i) => r.hidden = !(text[i].includes(s) && shown.some(L => on.has(r.dataset["e" + L])) && (!fam.value || r.dataset.f == fam.value)));
+	const eds = ticked("mx"), s = q.value.toLowerCase(), on = new Set(exp.filter(e => e.checked).map(e => e.dataset.e));
+	rows.forEach((r, i) => r.hidden = !(text[i].includes(s) && eds.some(L => on.has(r.dataset["e" + L])) && (!fam.value || r.dataset.f == fam.value)));
 }
 for (const s of $(".fam")) {
 	const b = document.createElement("button");
@@ -699,7 +701,7 @@ for (const s of $(".fam")) {
 }
 for (const e of $("[id^=viol-e]")) e.addEventListener("change", () => { if (sortBy.value == "v") sort(); });
 for (const e of $("[id^=mx-e]")) e.addEventListener("change", filter);
-sortBy.onchange = sort;
+for (const s of sorts) s.onchange = () => { for (const o of sorts) o.value = s.value; sort(); };
 q.oninput = fam.onchange = filter;
 for (const e of exp) e.onchange = filter;
 sort();
