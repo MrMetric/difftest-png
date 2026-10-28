@@ -614,7 +614,7 @@ def render(report: dict) -> str:
 	out.append(feature_table(report, groups))
 	# The matrix's controls sit in its sticky header: editions and the failing-only filter in the top corner, the
 	# script's sort, search and row filters in the tall corner under it.
-	top = edition_boxes("mx", lenses).replace("<p class=eds>", "<span>").replace("</p>", "</span>") + "<label><input type=checkbox id=f> only tests some implementation fails</label>"
+	top = edition_boxes("mx", lenses).replace("<p class=eds>", "<span>").replace("</p>", "</span>") + "<label><input type=checkbox id=f> only tests some implementation fails</label><span id=n class=js hidden></span>"
 	filters = (f"{sort_select}<input class=js hidden id=q type=search placeholder='id, note or family'><span class=js hidden>"
 		+ " ".join(f"<label><input type=checkbox checked data-e={e}> {e}</label>" for e in report["expectations"][::-1])
 		+ "</span><select class=js hidden id=fam><option value=''>every family" + "".join(f"<option>{esc(f)}" for f in families(report)) + "</select>")
@@ -692,7 +692,13 @@ const q = byId("q"), fam = byId("fam"), exp = $("[data-e]");
 function filter() {
 	const eds = ticked("mx"), s = q.value.toLowerCase(), on = new Set(exp.filter(e => e.checked).map(e => e.dataset.e));
 	rows.forEach((r, i) => r.hidden = !(text[i].includes(s) && eds.some(L => on.has(r.dataset["e" + L])) && (!fam.value || r.dataset.f == fam.value)));
+	count();
 }
+// How many rows the filters leave, whichever of them (script or CSS) hid the rest.
+const n = byId("n");
+function count() { n.textContent = `${rows.filter(r => r.checkVisibility()).length} of ${rows.length} tests`; }
+byId("f").addEventListener("change", count);
+for (const e of $("[id^=mx-e]")) e.addEventListener("change", count);
 for (const s of $(".fam")) {
 	const b = document.createElement("button");
 	b.textContent = s.textContent;
