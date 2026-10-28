@@ -58,7 +58,7 @@ th{font-weight:normal;text-align:left}
 .m thead tr:not(.kinds) th{top:1.4rem}
 .m .kb{border-left:3px solid #999}
 .s tr.kb>td{border-top:3px solid #999}
-.f tbody th{white-space:nowrap}
+.f tbody th,.v tbody th{white-space:nowrap}
 summary{cursor:pointer}
 #mx summary{display:flex;gap:.4rem;list-style:none}
 #mx summary::before{content:"▸"}
@@ -407,27 +407,101 @@ def alpha0_text(by_source: dict[str, dict[str, int]]) -> tuple[str, str]:
 	return ", ".join(f"{v} {n}" for v, n in sorted(counts.items(), key=lambda x: -x[1])), cls
 
 
-def summary_table(report: dict, groups: list[list[dict]]) -> str:
+def implementations_table(report: dict, groups: list[list[dict]]) -> str:
+	"""Each column group's names, versions and lineage; its rows carry what the script sorts and hides by."""
 	lenses = report["lenses"]
-	heads = ("implementation", "version", "lineage", *(f"must: {SUMMARY[k]}" for k in SUMMARY if k != "should"), f"should: {SUMMARY['should']}",
-		"silent", "strict", "color under alpha 0", "16→8")
 	order = {i["name"]: n for n, i in enumerate(report["implementations"])}
-	out = ["<h2>Summary</h2><table class=s id=sum><thead><tr>" + "".join(f"<th>{h}</th>" for h in heads) + "</tr></thead><tbody>"]
+	first = {kind(g[0]): g for g in reversed(groups)}  # the first group of each kind
+	out = ["<h2>Implementations</h2><table class=s id=sum><thead><tr><th>implementation</th><th>version</th><th>lineage</th></tr></thead><tbody>"]
 	for g in groups:
 		s = g[0]["summary"]
-		c = counts(report, g[0])
 		names = "<br>".join(esc(i["name"]) for i in g)
 		vers = "<br>".join(esc(i["revision"] or i["version"] or "") for i in g)
-		a0, a0cls = alpha0_text(s.get("alpha0", {}))
-		cells = [lens_td({lens: ((k if k == "should" else "must") if c[lens][k] else "pass", str(c[lens][k])) for lens in lenses}) for k in SUMMARY]
-		# silent accepts of non-conforming files are shown, not judged: no severity color
-		cells.append(lens_td({lens: ("", str(s[lens]["silent"])) for lens in lenses}))
 		sort = "".join(f" data-m{lens}={s[lens]['must']} data-s{lens}={s[lens]['should']}" for lens in lenses)
 		k = KINDS.index(kind(g[0]))
-		kb = " class=kb" if g is next(h for h in groups if kind(h[0]) == kind(g[0])) and k else ""
-		out.append(f"<tr{kb}{sort} data-o={order[g[0]['name']]} data-k={k}><td title='{esc(g[0]['notes'])}'>{names}</td><td>{vers}</td><td>{esc(g[0]['lineage'])}</td>"
-			f"{''.join(cells)}<td>{s.get('strict', '')}</td><td{a0cls}>{esc(a0)}</td><td>{esc(', '.join(s.get('16to8', [])))}</td></tr>")
+		kb = " class=kb" if first[kind(g[0])] is g and k else ""
+		out.append(f"<tr{kb}{sort} data-o={order[g[0]['name']]} data-k={k}><td title='{esc(g[0]['notes'])}'>{names}</td><td>{vers}</td><td>{esc(g[0]['lineage'])}</td></tr>")
 	return "".join(out) + "</tbody></table>"
+
+
+def violations_table(report: dict, groups: list[list[dict]]) -> str:
+	"""Under the selected lens, how many tests each column group counts in each SUMMARY kind, then its silent and
+	strict counts: a row per kind and a column per group, shaped like the matrix."""
+	lenses = report["lenses"]
+	bounds = boundaries(groups)
+	rows: dict[str, list[str]] = {k: [] for k in SUMMARY}
+	silent, strict = [], []
+	for n, g in enumerate(groups):
+		s, c = g[0]["summary"], counts(report, g[0])
+		for k in SUMMARY:
+			rows[k].append(lens_td({lens: ((k if k == "should" else "must") if c[lens][k] else "pass", str(c[lens][k])) for lens in lenses}, kb=n in bounds))
+		silent.append(lens_td({lens: ("", str(s[lens]["silent"])) for lens in lenses}, kb=n in bounds))
+		strict.append(lens_td({lens: ("", str(s.get("strict", ""))) for lens in lenses}, kb=n in bounds))
+	out = [f"<h2>Violations</h2><table class='m v' id=viol><thead>{head_rows(groups, '')}</thead><tbody>"]
+	for k in SUMMARY:
+		out.append(f"<tr><th>{esc(SUMMARY[k])}</th>{''.join(rows[k])}</tr>")
+	out.append(f"<tr><th>silent</th>{''.join(silent)}</tr><tr><th>strict</th>{''.join(strict)}</tr></tbody></table>")
+	out.append("<p>The first four rows are must-violations and the fifth should-violations, under the selected lens. "
+		"<b>silent</b>: the column accepted a file that does not conform and said nothing about it; a count, not a violation. "
+		"<b>strict</b>: a validator rejected a file that conforms, over a name a strict reading of the naming rules may flag "
+		"(iDOT's unregistered public name); recorded, not a violation.</p>")
+	return "".join(out)
+
+
+def names_text(groups: list[list[dict]]) -> str:
+	"""Column groups in prose, by project, each once: `a, b and c`."""
+	names = list(dict.fromkeys(i["project"] for g in groups for i in g))
+	return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+VERB = {"preserved": "preserve", "zeroed": "zero", "altered": "change"}
+SOURCE_TEXT = {"alpha channel": "an alpha channel", "tRNS color key": "a tRNS color key", "tRNS palette": "a tRNS palette"}
+
+
+def deviation(by_source: dict[str, dict[str, int]], norm: str) -> str:
+	"""How a column's color under alpha 0 departs from the norm, in words: per behavior, the sources it shows under;
+	a source with mixed behavior is given with its counts."""
+	parts, mixed = {}, []
+	for src, d in by_source.items():
+		if len(d) == 1:
+			v = next(iter(d))
+			if v != norm:
+				parts.setdefault(v, []).append(src)
+		else:
+			mixed.append(f"under {SOURCE_TEXT[src]} " + " and ".join(f"{v} on {n}" for v, n in d.items()))
+	return "; ".join([f"they {VERB[v]} it under " + " and ".join(SOURCE_TEXT[s] for s in srcs) for v, srcs in parts.items()] + mixed)
+
+
+def properties(report: dict, groups: list[list[dict]]) -> str:
+	"""Two short paragraphs: how the decoders that return at most 8 bits reduce 16-bit samples, and the color under
+	fully transparent pixels, as the norm and the exceptions by name, since nearly every decoder does the same."""
+	out = []
+	eight = [g for g in groups if g[0]["pixels"] and g[0]["max_depth"] == 8]
+	if eight:
+		ways: dict[str, list] = {}
+		for g in eight:
+			ways.setdefault(", ".join(g[0]["summary"].get("16to8", [])) or "showed no 16-bit image", []).append(g)
+		text = f"{names_text(eight)} return at most 8 bits per sample. "
+		text += "All of them keep the high byte of a 16-bit sample and drop the low byte." if list(ways) == ["high byte"] \
+			else " ".join(f"{names_text(gs)}: {way}." for way, gs in ways.items())
+		out.append(f"<p>{esc(text)}</p>")
+	by_text: dict[str, list] = {}
+	for g in groups:
+		if g[0]["pixels"]:
+			by_text.setdefault(alpha0_text(g[0]["summary"].get("alpha0", {}))[0], []).append(g)
+	norm = max(by_text, key=lambda t: len(by_text[t]))
+	if norm in VERB:
+		text = f"Every decoder {VERB[norm]}s the color under fully transparent pixels"
+		exceptions = []
+		for t, gs in by_text.items():
+			if t != norm:
+				dev = deviation(gs[0][0]["summary"]["alpha0"], norm)
+				clause = esc(f"{names_text(gs)}: {dev}")
+				exceptions.append(f"<span class=should>{clause}</span>" if "change" in dev else clause)
+		out.append(f"<p>{esc(text)}" + (", except " + "; ".join(exceptions) if exceptions else "") + ".</p>")
+	else:
+		out.append("<p>The color under fully transparent pixels: " + "; ".join(f"{esc(names_text(gs))}: {esc(t)}" for t, gs in by_text.items()) + ".</p>")
+	return "".join(out)
 
 
 def disclaimer() -> str:
@@ -468,7 +542,9 @@ def render(report: dict) -> str:
 		"<option value=o>in impls.toml order</select></label></p><details class=js hidden><summary>columns</summary>"
 		+ "".join(f"<label><input type=checkbox checked data-g={n}> {esc(' · '.join(i['name'] for i in g))}</label> " for n, g in enumerate(groups))
 		+ "</details>")
-	out.append(summary_table(report, groups))
+	out.append(implementations_table(report, groups))
+	out.append(violations_table(report, groups))
+	out.append(properties(report, groups))
 	out.append(feature_table(report, groups))
 	out.append("<h2 id=results>Results</h2><p><label><input type=checkbox id=f> show only tests some implementation fails</label></p>"
 		"<p class=js hidden><input id=q type=search placeholder='id, note or family'> "
@@ -493,7 +569,7 @@ const byId = id => document.getElementById(id);
 for (const e of $(".js")) e.hidden = false;
 const lens = () => $("[name=lens]").find(e => e.checked).value;
 const sumRows = $("#sum tbody tr");
-const cellsOf = new Map([...$("#feat tr:not(.kinds)"), ...$("#mx tr:not(.kinds)")].map(r => [r, [...r.children].slice(1)]));
+const cellsOf = new Map([...$("#viol tr:not(.kinds)"), ...$("#feat tr:not(.kinds)"), ...$("#mx tr:not(.kinds)")].map(r => [r, [...r.children].slice(1)]));
 const groups = sumRows.map((tr, i) => ({i, tr, name: tr.cells[0].firstChild.textContent, o: +tr.dataset.o, k: +tr.dataset.k}));
 const byTr = new Map(groups.map(g => [g.tr, g]));
 const cmp = (a, b) => a < b ? -1 : a > b ? 1 : 0;

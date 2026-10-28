@@ -296,9 +296,11 @@ and a difference needs no further comment to read as wrong. Where the generator 
 that produces exactly those pixels, an invalid filter byte taken as filter None for instance, the
 label names the misreading instead.
 
-The summary splits must-violations by what went wrong: a valid file rejected, an invalid file
-accepted, wrong pixels, or a crash, hang, memory error or shim failure. A family table rolls the
-results up per part of the suite.
+A violations table, shaped like the matrix, splits must-violations by what went wrong: a valid
+file rejected, an invalid file accepted, wrong pixels, or a crash, hang, memory error or shim
+failure. The properties that are not violations, the color under alpha 0 and the reduction of
+16-bit samples, are two sentences naming the exceptions, since nearly every decoder does the same.
+A family table rolls the results up per part of the suite.
 
 The human disclaimer is written in the README, and the report copies it from there.
 
