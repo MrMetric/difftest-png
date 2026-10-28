@@ -43,6 +43,7 @@ SEVERITY_STYLE = {"pass": "color:#7c7", "should": "color:#eb5;background:#332a10
 SEVERITY_TEXT = {"pass": "pass", "should": "should-violation", "must": "must-violation",
 	"fatal": "crash, hang, out of memory or memory error (a must-violation)"}
 THUMB_PX = 60  # the height of an output's thumbnail
+EDITION = {"2": "2nd edition", "3": "3rd edition"}  # the lens names a reader sees
 CSS = """
 body{margin:1rem;font:1rem/1.5 system-ui,sans-serif;color:#ddd;background:#151515}
 a{color:#8bbcff}
@@ -56,6 +57,11 @@ th{font-weight:normal;text-align:left}
 .m thead th span{writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap}
 .m thead tr.kinds th{text-align:center;height:1.4rem;line-height:1.4rem;padding:0 .2rem;color:#999;font-size:.8rem}
 .m thead tr:not(.kinds) th{top:1.4rem}
+th.ed{vertical-align:middle;text-align:center;padding:.2rem;color:#999;font-size:.8rem}
+th.ed span{writing-mode:vertical-rl;transform:rotate(180deg);display:inline-block;white-space:nowrap}
+#viol tbody,#feat tbody{display:none}
+.eds{margin:.3rem 0}
+#sum tr.off td:not(:first-child){opacity:.4}
 .m .kb{border-left:3px solid #999}
 .s tr.kb>td{border-top:3px solid #999}
 .f tbody th,.v tbody th{white-space:nowrap}
@@ -82,6 +88,19 @@ summary{cursor:pointer}
 .legend td:first-child{text-align:center}
 .note{color:#ddd}
 code{font-size:.9em}
+#mx,#mx thead,#mx tbody{display:block}
+#mx thead{position:sticky;top:0;background:#151515;z-index:1}
+#mx tr{display:grid;grid-template-columns:32rem repeat(var(--v),1.6rem);content-visibility:auto;contain-intrinsic-size:auto 1.8rem}
+#mx tr[hidden]{display:none}
+#mx td,#mx th{display:block;border-width:0 1px 1px 0}
+#mx{border-left:1px solid #444;border-top:1px solid #444}
+#mx thead th{position:static;padding:.3rem .1rem}
+#mx tr.kinds th{height:auto;line-height:1.2}
+#mx tr.kinds th span{writing-mode:vertical-rl;transform:rotate(180deg);display:inline-block;white-space:nowrap}
+#mx td:first-child,#mx th:first-child{grid-column:1}
+#mx details[open]{width:auto}
+#mx i{display:none;font-style:normal;padding:0 .1rem}
+#mx td:has(i){font-size:.75rem}
 """ + "".join(f".{cls}{{{style}}}" for cls, style in SEVERITY_STYLE.items())
 
 
@@ -118,14 +137,24 @@ def boundaries(groups: list[list[dict]]) -> set[int]:
 	return {n for n in first.values() if n > 0}
 
 
-def head_rows(groups: list[list[dict]], corner: str) -> str:
-	"""The two header rows of a matrix-shaped table: the kinds spanning their columns, then the names, rotated."""
+def head_rows(groups: list[list[dict]], corner: str, matrix: bool = False, corner_span: int = 1) -> str:
+	"""The two header rows of a matrix-shaped table: the kinds spanning their columns, then the names, rotated. In the
+	matrix (rows that are grids) a name cell carries its group's class c<N> and a kind cell its grid span; in a table
+	the kinds span by colspan and the first column of a kind carries `kb`."""
 	counts = {k: sum(kind(g[0]) == k for g in groups) for k in KINDS}
-	kinds = "".join(f"<th colspan={counts[k]} data-k={n}{' class=kb' if n else ''}>{k}</th>" for n, k in enumerate(KINDS) if counts[k])
 	bounds = boundaries(groups)
-	names = "".join(f"<th{' class=kb' if n in bounds else ''} title='{esc(chr(10).join(label(i) for i in g))}'><span>{esc(' · '.join(i['name'] for i in g))}</span></th>"
-		for n, g in enumerate(groups))
-	return f"<tr class=kinds><th></th>{kinds}</tr><tr><th><span>{corner}</span></th>{names}</tr>"
+	kinds, at = [], 2
+	for n, k in enumerate(KINDS):
+		if counts[k]:
+			span = f" style='grid-column:{at}/span {counts[k]}'" if matrix else f" colspan={counts[k]}"
+			kinds.append(f"<th{span} data-k={n}{' class=kb' if n else ''}>{f'<span>{k}</span>' if matrix else k}</th>")
+			at += counts[k]
+	names = []
+	for n, g in enumerate(groups):
+		cls = " ".join(c for c in (f"c{n}" if matrix else "", "kb" if n in bounds else "") if c)
+		names.append(f"<th{f' class={chr(39)}{cls}{chr(39)}' if cls else ''} title='{esc(chr(10).join(label(i) for i in g))}'><span>{esc(' · '.join(i['name'] for i in g))}</span></th>")
+	corner_td = f"<th{f' colspan={corner_span}' if corner_span > 1 else ''}>"
+	return f"<tr class=kinds>{corner_td}</th>{''.join(kinds)}</tr><tr>{corner_td}<span>{corner}</span></th>{''.join(names)}</tr>"
 
 
 def label(impl: dict) -> str:
@@ -147,7 +176,7 @@ def marks(r: dict, ratings: dict[str, str]) -> str:
 
 def expectation_text(test: dict) -> str:
 	parts = {lens: f"{test['expectation'][lens]}, {'conforms' if test['conforms'][lens] else 'does not conform'}" for lens in test["expectation"]}
-	text = next(iter(parts.values())) if len(set(parts.values())) == 1 else "; ".join(f"lens {lens}: {p}" for lens, p in parts.items())
+	text = next(iter(parts.values())) if len(set(parts.values())) == 1 else "; ".join(f"{EDITION[lens]}: {p}" for lens, p in parts.items())
 	return text + (f"; strict: {', '.join(test['strict'])}" if test["strict"] else "")
 
 
@@ -155,45 +184,73 @@ def outcome(r: dict, lens: str) -> str:
 	return r["outcome"] if isinstance(r["outcome"], str) else r["outcome"][lens]
 
 
-def lens_td(per_lens: dict[str, tuple[str, str]], extra: str = "", kb: bool = False) -> str:
-	"""A cell whose class and text depend on the lens: per_lens is lens -> (class, text). When the lenses agree the
-	text is plain; otherwise each lens's class carries its digit and its text sits in data-<lens>, which the
-	selected lens's CSS shows (lens_css()). `extra` is lens-independent HTML after the text; `kb` marks the first
-	column of a kind (boundaries())."""
-	if len(set(per_lens.values())) == 1:
-		cls, text = next(iter(per_lens.values()))
-		classes = " ".join(c for c in (cls, "kb" if kb else "") if c)
-		return f"<td{f' class={chr(39)}{classes}{chr(39)}' if classes else ''}>{esc(text)}{extra}</td>"
-	classes = " ".join([f"{cls}{lens}" for lens, (cls, _) in per_lens.items() if cls] + (["kb"] if kb else []))
-	data = "".join(f" data-{lens}='{esc(text)}'" for lens, (_, text) in per_lens.items())
-	return f"<td{f' class={chr(39)}{classes}{chr(39)}' if classes else ''}{data}>{extra}</td>"
+def edition_boxes(table: str, lenses: list[str]) -> str:
+	"""A checkbox per edition for one table (id <table>-e<lens>); the third edition starts ticked. Pure CSS: the
+	rules in edition_css() show what is ticked, or everything when nothing is."""
+	assert "3" in lenses, "the third edition is the one ticked at first"
+	return "<p class=eds>" + " ".join(f"<label><input type=checkbox id={table}-e{lens}{' checked' if lens == '3' else ''}> {EDITION[lens]}</label>"
+		for lens in lenses) + "</p>"
 
 
-def lens_css(lenses: list[str]) -> str:
-	"""The lens switch: the checked radio #l<lens> selects which data-<lens> text and <class><lens> color show."""
+def edition_css(lenses: list[str]) -> str:
+	"""The editions each table shows. Tables with a block of rows per edition (tbody.e<lens>) show the ticked
+	blocks; the matrix shows, in a cell where the editions disagree, the ticked editions' glyphs (i.e<lens>); the
+	failing-only filter hides a row that passes under every ticked edition. Nothing ticked shows everything."""
 	out = []
-	for lens in lenses:
-		on = f"body:has(#l{lens}:checked)"
-		out.append(f"{on} [data-{lens}]::before{{content:attr(data-{lens})}}")
-		out += [f"{on} .{cls}{lens}{{{style}}}" for cls, style in SEVERITY_STYLE.items()]
-		out.append(f"body:has(#f:checked):has(#l{lens}:checked) tr.ok{lens}{{display:none}}")
+	for t in ("viol", "feat"):
+		none = "".join(f":not(:has(#{t}-e{l}:checked))" for l in lenses)
+		out.append(f"body{none} #{t} tbody{{display:table-row-group}}")
+		out += [f"body:has(#{t}-e{l}:checked) #{t} tbody.e{l}{{display:table-row-group}}" for l in lenses]
+	none = "".join(f":not(:has(#mx-e{l}:checked))" for l in lenses)
+	out.append(f"body{none} #mx i{{display:inline}}")
+	out += [f"body:has(#mx-e{l}:checked) #mx .e{l}{{display:inline}}" for l in lenses]
+	for picked in range(1, 1 << len(lenses)):  # every non-empty choice of editions, and the empty one as all
+		chosen = [l for n, l in enumerate(lenses) if picked >> n & 1]
+		cond = "".join(f":has(#mx-e{l}:checked)" if l in chosen else f":not(:has(#mx-e{l}:checked))" for l in lenses)
+		out.append(f"body:has(#f:checked){cond} #mx tr{''.join(f'.ok{l}' for l in chosen)}{{display:none}}")
+	out.append(f"body:has(#f:checked){none} #mx tr{''.join(f'.ok{l}' for l in lenses)}{{display:none}}")
 	return "".join(out)
 
 
-def cell(r: dict, lenses: list[str], ratings: dict[str, str], kb: bool = False) -> str:
-	"""One matrix cell: under each lens, the outcome's glyph colored by its severity (no class for a pass, the
-	column's default); a crash, hang or out-of-memory is `fatal`, and a memory error shows as M whatever the
-	pixels. The arguable marks are lens-independent."""
+def split_td(per_lens: dict[str, tuple[str, str]], extra: str = "", cls: str = "") -> str:
+	"""A matrix cell: when the editions agree, the text with its class; otherwise one <i> per edition, each with its
+	own class, which edition_css() shows or hides. `extra` is edition-independent HTML after the text; `cls` the
+	cell's own classes (its column class c<N>)."""
+	if len(set(per_lens.values())) == 1:
+		sev, text = next(iter(per_lens.values()))
+		classes = " ".join(c for c in (cls, sev) if c)
+		return f"<td{f' class={chr(39)}{classes}{chr(39)}' if classes else ''}>{esc(text)}{extra}</td>"
+	inner = "".join(f"<i class='e{lens}{f' {sev}' if sev else ''}'>{esc(text)}</i>" for lens, (sev, text) in per_lens.items())
+	return f"<td{f' class={chr(39)}{cls}{chr(39)}' if cls else ''}>{inner}{extra}</td>"
+
+
+def cell(r: dict, lenses: list[str], ratings: dict[str, str], col: int) -> str:
+	"""One matrix cell in column group `col`: under each edition, the outcome's glyph colored by its severity (no
+	class for a pass, the column's default); a crash, hang or out-of-memory is `fatal`, and a memory error shows as
+	M whatever the pixels. The arguable marks are edition-independent."""
 	mark = marks(r, ratings) if "memory" not in r else ""
 	sup = f"<sup>{mark}</sup>" if mark else ""
 	if "memory" in r:
-		return f"<td class='fatal{' kb' if kb else ''}'>{GLYPH['memory']}{sup}</td>"
+		return f"<td class='c{col} fatal'>{GLYPH['memory']}{sup}</td>"
 	per = {}
 	for lens in lenses:
 		o = outcome(r, lens)
-		cls = "fatal" if o in ("crash", "timeout", "oom") else r["severity"][lens]
-		per[lens] = ("" if cls == "pass" else cls, GLYPH[o])
-	return lens_td(per, sup, kb)
+		sev = "fatal" if o in ("crash", "timeout", "oom") else r["severity"][lens]
+		per[lens] = ("" if sev == "pass" else sev, GLYPH[o])
+	return split_td(per, sup, f"c{col}")
+
+
+def matrix_vars(groups: list[list[dict]], hidden: set[int] = frozenset()) -> str:
+	"""The matrix's column placement as CSS, which the script rewrites to re-sort or hide columns: --v (visible
+	columns), --c<N> (each group's track), display:none for hidden groups, and the kind boundaries' border."""
+	shown = [n for n in range(len(groups)) if n not in hidden]
+	css = [f"#mx{{--v:{len(shown)};" + "".join(f"--c{n}:{shown.index(n) + 2};" for n in shown) + "}"]
+	css += [f"#mx .c{n}{{display:none}}" for n in sorted(hidden)]
+	first: dict[str, int] = {}
+	for n in shown:
+		first.setdefault(kind(groups[n][0]), n)
+	css += [f"#mx .c{n}{{border-left:3px solid #999}}" for k, n in first.items() if KINDS.index(k)]
+	return "".join(css)
 
 
 def violation(test: dict, impl: dict, r: dict, lens: str) -> str | None:
@@ -371,24 +428,28 @@ def families(report: dict) -> list[str]:
 
 
 def feature_table(report: dict, groups: list[list[dict]]) -> str:
-	"""Per family and column group: n/m, the n of the family's m tests the group fails (must or should) under
-	the lens, colored by the worst severity; a pass glyph when n is 0."""
+	"""Per family and column group, under each edition: n/m, the n of the family's m tests the group fails (must or
+	should), colored by the worst severity; a pass glyph when n is 0. A block of rows per edition, labelled down
+	its side; edition_css() shows the ticked ones."""
 	lenses = report["lenses"]
 	bounds = boundaries(groups)
-	out = [f"<h2>By family</h2><table class='m f' id=feat><thead>{head_rows(groups, 'family')}</thead><tbody>"]
-	for fam in families(report):
-		tests = [t for t in report["tests"] if t["family"] == fam]
-		cells = []
-		for col, g in enumerate(groups):
-			rs = report["results"][g[0]["name"]]
-			per = {}
-			for lens in lenses:
+	fams = families(report)
+	out = [f"<h2>By family</h2>{edition_boxes('feat', lenses)}<table class='m f' id=feat><thead>{head_rows(groups, 'family', corner_span=2)}</thead>"]
+	for lens in lenses:
+		out.append(f"<tbody class=e{lens}>")
+		for row, fam in enumerate(fams):
+			tests = [t for t in report["tests"] if t["family"] == fam]
+			cells = []
+			for col, g in enumerate(groups):
+				rs = report["results"][g[0]["name"]]
 				sev = [rs[t["id"]]["severity"][lens] for t in tests]
-				n = sum(s != "pass" for s in sev)
-				per[lens] = ("must" if "must" in sev else "should", f"{n}/{len(tests)}") if n else ("pass", "✓")
-			cells.append(lens_td(per, kb=col in bounds))
-		out.append(f"<tr><th><span class=fam>{esc(fam)}</span></th>{''.join(cells)}</tr>")
-	return "".join(out) + "</tbody></table>"
+				n = sum(x != "pass" for x in sev)
+				cls = ("must" if "must" in sev else "should") if n else "pass"
+				cells.append(f"<td class='{cls}{' kb' if col in bounds else ''}'>{f'{n}/{len(tests)}' if n else '✓'}</td>")
+			side = f"<th class=ed rowspan={len(fams)}><span>{EDITION[lens]}</span></th>" if row == 0 else ""
+			out.append(f"<tr>{side}<th><span class=fam>{esc(fam)}</span></th>{''.join(cells)}</tr>")
+		out.append("</tbody>")
+	return "".join(out) + "</table>"
 
 
 def alpha0_text(by_source: dict[str, dict[str, int]]) -> tuple[str, str]:
@@ -408,40 +469,46 @@ def alpha0_text(by_source: dict[str, dict[str, int]]) -> tuple[str, str]:
 
 
 def implementations_table(report: dict, groups: list[list[dict]]) -> str:
-	"""Each column group's names, versions and lineage; its rows carry what the script sorts and hides by."""
+	"""Each column group's names, versions and lineage, behind a checkbox (script only) that shows or hides its
+	column everywhere; the rows carry what the script sorts by."""
 	lenses = report["lenses"]
 	order = {i["name"]: n for n, i in enumerate(report["implementations"])}
 	first = {kind(g[0]): g for g in reversed(groups)}  # the first group of each kind
-	out = ["<h2>Implementations</h2><table class=s id=sum><thead><tr><th>implementation</th><th>version</th><th>lineage</th></tr></thead><tbody>"]
-	for g in groups:
+	out = ["<h2>Implementations</h2><table class=s id=sum><thead><tr><th class=js hidden>show</th><th>implementation</th><th>version</th><th>lineage</th></tr></thead><tbody>"]
+	for n, g in enumerate(groups):
 		s = g[0]["summary"]
 		names = "<br>".join(esc(i["name"]) for i in g)
 		vers = "<br>".join(esc(i["revision"] or i["version"] or "") for i in g)
 		sort = "".join(f" data-m{lens}={s[lens]['must']} data-s{lens}={s[lens]['should']}" for lens in lenses)
 		k = KINDS.index(kind(g[0]))
 		kb = " class=kb" if first[kind(g[0])] is g and k else ""
-		out.append(f"<tr{kb}{sort} data-o={order[g[0]['name']]} data-k={k}><td title='{esc(g[0]['notes'])}'>{names}</td><td>{vers}</td><td>{esc(g[0]['lineage'])}</td></tr>")
+		out.append(f"<tr{kb}{sort} data-o={order[g[0]['name']]} data-k={k} data-n='{esc(g[0]['name'])}'><td class=js hidden><input type=checkbox checked data-g={n}></td>"
+			f"<td title='{esc(g[0]['notes'])}'>{names}</td><td>{vers}</td><td>{esc(g[0]['lineage'])}</td></tr>")
 	return "".join(out) + "</tbody></table>"
 
 
 def violations_table(report: dict, groups: list[list[dict]]) -> str:
-	"""Under the selected lens, how many tests each column group counts in each SUMMARY kind, then its silent and
-	strict counts: a row per kind and a column per group, shaped like the matrix."""
+	"""How many tests each column group counts in each SUMMARY kind, then its silent and strict counts: a row per
+	kind and a column per group, as the matrix has them, in a block of rows per edition labelled down its side."""
 	lenses = report["lenses"]
 	bounds = boundaries(groups)
-	rows: dict[str, list[str]] = {k: [] for k in SUMMARY}
-	silent, strict = [], []
-	for n, g in enumerate(groups):
-		s, c = g[0]["summary"], counts(report, g[0])
-		for k in SUMMARY:
-			rows[k].append(lens_td({lens: ((k if k == "should" else "must") if c[lens][k] else "pass", str(c[lens][k])) for lens in lenses}, kb=n in bounds))
-		silent.append(lens_td({lens: ("", str(s[lens]["silent"])) for lens in lenses}, kb=n in bounds))
-		strict.append(lens_td({lens: ("", str(s.get("strict", ""))) for lens in lenses}, kb=n in bounds))
-	out = [f"<h2>Violations</h2><table class='m v' id=viol><thead>{head_rows(groups, '')}</thead><tbody>"]
-	for k in SUMMARY:
-		out.append(f"<tr><th>{esc(SUMMARY[k])}</th>{''.join(rows[k])}</tr>")
-	out.append(f"<tr><th>silent</th>{''.join(silent)}</tr><tr><th>strict</th>{''.join(strict)}</tr></tbody></table>")
-	out.append("<p>The first four rows are must-violations and the fifth should-violations, under the selected lens. "
+	out = [f"<h2>Violations</h2>{edition_boxes('viol', lenses)}<table class='m v' id=viol><thead>{head_rows(groups, '', corner_span=2)}</thead>"]
+	for lens in lenses:
+		rows: list[tuple[str, list[str]]] = [(SUMMARY[k], []) for k in SUMMARY] + [("silent", []), ("strict", [])]
+		for n, g in enumerate(groups):
+			s, c = g[0]["summary"], counts(report, g[0])
+			kb = " kb" if n in bounds else ""
+			for row, k in enumerate(SUMMARY):
+				cls = (k if k == "should" else "must") if c[lens][k] else "pass"
+				rows[row][1].append(f"<td class='{cls}{kb}'>{c[lens][k]}</td>")
+			rows[-2][1].append(f"<td{f' class=kb' if kb else ''}>{s[lens]['silent']}</td>")
+			rows[-1][1].append(f"<td{f' class=kb' if kb else ''}>{s.get('strict', '')}</td>")
+		out.append(f"<tbody class=e{lens}>")
+		for row, (name, cells) in enumerate(rows):
+			side = f"<th class=ed rowspan={len(rows)}><span>{EDITION[lens]}</span></th>" if row == 0 else ""
+			out.append(f"<tr>{side}<th>{esc(name)}</th>{''.join(cells)}</tr>")
+		out.append("</tbody>")
+	out.append("</table><p>The first four rows are must-violations and the fifth should-violations. "
 		"<b>silent</b>: the column accepted a file that does not conform and said nothing about it; a count, not a violation. "
 		"<b>strict</b>: a validator rejected a file that conforms, over a name a strict reading of the naming rules may flag "
 		"(iDOT's unregistered public name); recorded, not a violation.</p>")
@@ -520,44 +587,41 @@ def render(report: dict) -> str:
 	lenses = report["lenses"]
 	date = report["generated"][:10]
 	assert {c.split(":")[0] for c in report["ratings"]} == set(TOPIC), "a choice topic TOPIC has no letter for"
+	assert set(lenses) <= set(EDITION), lenses
 	digests = sorted({d for t in tests for d in [*(b["digest"] for b in t["buckets"]), t["preferred"]] if d and "png" in report["images"][d]})
 	classes = {d: f"i{n}" for n, d in enumerate(digests)}
+	columns = "".join(f"#mx .c{n}{{grid-column:var(--c{n})}}" for n in range(len(groups)))
 	out = [f"<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
-		f"<title>PNG decoder conformance, {date}</title><style>{CSS}{lens_css(lenses)}{thumb_css(report['images'], classes)}</style>"]
+		f"<title>PNG decoder conformance, {date}</title><style>{CSS}{edition_css(lenses)}{columns}{thumb_css(report['images'], classes)}</style>"
+		f"<style id=dyn>{matrix_vars(groups)}</style>"]
 	out.append(f"""<h1>PNG decoder conformance</h1>
 <p>Every decoder below was run over the same {len(tests)} small PNG files from <a href="{REPO}">difftest-png</a>, each one built to test one rule of the PNG specification or one behavior on which some decoder deviates. Run {esc(report['generated'])} on {esc(report['host'])}.</p>
 <p>Each result is rated under each lens: <b>pass</b>, <b class=should>should</b> (the specification says a decoder should do otherwise, e.g. recover a recoverable fault instead of rejecting the image) or <b class=must>must</b> (a requirement is broken: wrong pixels, an invalid file accepted, a valid file rejected, a crash, a hang, a memory error). Warnings never count against a decoder. Running out of memory counts like a crash: a file should be rejected with an error, and a decoder that instead exhausts its host hands every program that opens untrusted images a denial of service. Pixels are compared as 16-bit RGBA with no color management; color under fully transparent pixels and the 8-bit reduction of 16-bit images are recorded as properties, not failures. Validators (pngcheck) are judged on a different question: whether each file conforms to the specification. Some files a decoder must still display do not conform, for example one with a chunk name the specification reserves.</p>
-<p>Two editions of the specification matter: the second (ISO/IEC 15948:2003; PNG 1.0 and 1.1 count as the second) and the third (W3C, 2025). A lens is an edition's text plus the extensions: the W3C registered extensions, Apple's iDOT, and under the second edition the chunks the third edition added (APNG, cICP, mDCV, cLLI, eXIf). Every result is rated through both lenses separately; the lens switch below chooses which one every table shows. There is no single verdict: following one edition rather than the other is not a defect. The two ratings differ only where the texts contradict each other, which they do in one place: a palette index past the end of PLTE is an error in the second edition and renders opaque black in the third.</p>
+<p>Two editions of the specification matter: the second (ISO/IEC 15948:2003; PNG 1.0 and 1.1 count as the second) and the third (W3C, 2025). A lens is an edition's text plus the extensions: the W3C registered extensions, Apple's iDOT, and under the second edition the chunks the third edition added (APNG, cICP, mDCV, cLLI, eXIf). Every result is rated through both lenses separately; each table has a checkbox per edition, and shows the ticked ones. There is no single verdict: following one edition rather than the other is not a defect. The two ratings differ only where the texts contradict each other, which they do in one place: a palette index past the end of PLTE is an error in the second edition and renders opaque black in the third.</p>
 <p>Not tested: animation frames after the default image, color management (gAMA, cHRM, iCCP, sRGB, cICP, sBIT), encoders, performance. Passing every test means the suite is incomplete, not that the decoder is perfect.</p>""")
 	if report["problems"]:
 		out.append("<p class=must>Suite consistency problems in this run:</p><ul>" + "".join(f"<li>{esc(p)}" for p in report["problems"]) + "</ul>")
 
 	out.append(disclaimer())
-	assert "3" in lenses, "lens 3 is the one selected by default"
-	out.append("<p class=lens>lens: " + " ".join(f"<label><input type=radio name=lens id=l{lens} value={lens}{' checked' if lens == '3' else ''}> {lens}</label>"
-		for lens in lenses) + "</p>")
 	out.append(legend())
-	bounds = boundaries(groups)
 	out.append("<p class=js hidden><label>sort columns <select id=sort><option value=n>by name<option value=v>by violations"
-		"<option value=o>in impls.toml order</select></label></p><details class=js hidden><summary>columns</summary>"
-		+ "".join(f"<label><input type=checkbox checked data-g={n}> {esc(' · '.join(i['name'] for i in g))}</label> " for n, g in enumerate(groups))
-		+ "</details>")
+		"<option value=o>in impls.toml order</select></label></p>")
 	out.append(implementations_table(report, groups))
 	out.append(violations_table(report, groups))
 	out.append(properties(report, groups))
 	out.append(feature_table(report, groups))
-	out.append("<h2 id=results>Results</h2><p><label><input type=checkbox id=f> show only tests some implementation fails</label></p>"
+	out.append(f"<h2 id=results>Results</h2>{edition_boxes('mx', lenses)}<p><label><input type=checkbox id=f> show only tests some implementation fails</label></p>"
 		"<p class=js hidden><input id=q type=search placeholder='id, note or family'> "
 		+ " ".join(f"<label><input type=checkbox checked data-e={e}> {e}</label>" for e in report["expectations"][::-1])
 		+ " <select id=fam><option value=''>every family" + "".join(f"<option>{esc(f)}" for f in families(report)) + "</select></p>")
-	out.append(f"<table class=m id=mx><thead>{head_rows(groups, 'test')}</thead><tbody>")
+	out.append(f"<table class=m id=mx><thead>{head_rows(groups, 'test', matrix=True)}</thead><tbody>")
 	for t in tests:
 		rs = [report["results"][g[0]["name"]][t["id"]] for g in groups]
 		ok = "".join(f" ok{lens}" for lens in lenses if all(r["severity"][lens] == "pass" for r in rs)).strip()
 		data = "".join(f" data-e{lens}={t['expectation'][lens]}" for lens in lenses)
 		out.append(f"<tr{f' class={chr(39)}{ok}{chr(39)}' if ok else ''}{data} data-f='{esc(t['family'])}'><td><details><summary><span>{esc(t['id'])}</span>"
 			f"<a href='{REPO}/blob/HEAD/decode/{esc(t['file'])}'>png</a></summary>{expansion(t, report, classes)}</details></td>"
-			f"{''.join(cell(r, lenses, report['ratings'], n in bounds) for n, r in enumerate(rs))}</tr>")
+			f"{''.join(cell(r, lenses, report['ratings'], n) for n, r in enumerate(rs))}</tr>")
 	out.append("</tbody></table>")
 	out.append(f"<script>{SCRIPT}</script>")
 	return "".join(out)
@@ -567,15 +631,18 @@ SCRIPT = """
 const $ = (s, e = document) => [...e.querySelectorAll(s)];
 const byId = id => document.getElementById(id);
 for (const e of $(".js")) e.hidden = false;
-const lens = () => $("[name=lens]").find(e => e.checked).value;
 const sumRows = $("#sum tbody tr");
-const cellsOf = new Map([...$("#viol tr:not(.kinds)"), ...$("#feat tr:not(.kinds)"), ...$("#mx tr:not(.kinds)")].map(r => [r, [...r.children].slice(1)]));
-const groups = sumRows.map((tr, i) => ({i, tr, name: tr.cells[0].firstChild.textContent, o: +tr.dataset.o, k: +tr.dataset.k}));
+// The two small tables move their cells; the matrix is placed by the CSS in #dyn (grid tracks per column class).
+// A row's column cells: its tds, and in the header the name cells, which alone carry a title.
+const cellsOf = new Map([...$("#viol tr:not(.kinds)"), ...$("#feat tr:not(.kinds)")].map(r => [r, [...r.children].filter(c => c.tagName == "TD" || c.hasAttribute("title"))]));
+const groups = sumRows.map((tr, i) => ({i, tr, name: tr.dataset.n, o: +tr.dataset.o, k: +tr.dataset.k, on: true}));
 const byTr = new Map(groups.map(g => [g.tr, g]));
 const cmp = (a, b) => a < b ? -1 : a > b ? 1 : 0;
-const sortBy = byId("sort");
+const sortBy = byId("sort"), dyn = byId("dyn");
+const ticked = t => $(`[id^=${t}-e]`).filter(e => e.checked).map(e => e.id.slice(-1));
+const edition = () => { const e = ticked("viol"); return e.includes("3") || !e.length ? "3" : e[0]; };
 function sort() {
-	const L = lens(), d = g => g.tr.dataset;
+	const L = edition(), d = g => g.tr.dataset;
 	const key = {
 		v: (a, b) => d(a)["m" + L] - d(b)["m" + L] || d(a)["s" + L] - d(b)["s" + L] || cmp(a.name, b.name),
 		n: (a, b) => cmp(a.name, b.name),
@@ -583,35 +650,46 @@ function sort() {
 	}[sortBy.value];
 	const order = [...groups].sort((a, b) => a.k - b.k || key(a, b));
 	for (const g of order) g.tr.parentNode.append(g.tr);
-	for (const [r, cells] of cellsOf) for (const g of order) r.append(cells[g.i]);
-	bounds();
+	for (const [r, cells] of cellsOf) r.append(...order.map(g => cells[g.i]));
+	place();
 }
-// The heavier border sits on the first visible column of each kind but the first; the kind headers span the visible columns.
-function bounds() {
-	const order = [...byId("sum").tBodies[0].rows].map(tr => byTr.get(tr)).filter(g => !g.tr.hidden);
-	const seen = new Set(), n = {};
-	for (const g of order) {
-		const on = !seen.has(g.k) && g.k > 0;
+// Columns in their current order: the tables' kind boundaries and kind spans, and the matrix's placement CSS.
+function place() {
+	const order = [...byId("sum").tBodies[0].rows].map(tr => byTr.get(tr));
+	const shown = order.filter(g => g.on);
+	const seen = new Set(), n = {}, css = [`#mx{--v:${shown.length};` + shown.map((g, i) => `--c${g.i}:${i + 2};`).join("") + "}"];
+	let at = 2;
+	for (const g of shown) {
+		const first = !seen.has(g.k) && g.k > 0;
 		seen.add(g.k);
 		n[g.k] = (n[g.k] || 0) + 1;
-		g.tr.classList.toggle("kb", on);
-		for (const cells of cellsOf.values()) cells[g.i].classList.toggle("kb", on);
+		g.tr.classList.toggle("kb", first);
+		for (const cells of cellsOf.values()) cells[g.i].classList.toggle("kb", first);
+		if (first) css.push(`#mx .c${g.i}{border-left:3px solid #999}`);
 	}
-	for (const th of $("tr.kinds th[data-k]")) { const c = n[th.dataset.k] || 0; th.colSpan = c || 1; th.hidden = !c; }
+	for (const g of order) if (!g.on) css.push(`#mx .c${g.i}{display:none}`);
+	for (const th of $("tr.kinds th[data-k]")) {
+		const c = n[th.dataset.k] || 0;
+		th.hidden = !c;
+		if (th.closest("#mx")) { th.style.gridColumn = `${at}/span ${c || 1}`; at += c; } else th.colSpan = c || 1;
+	}
+	dyn.textContent = css.join("");
 }
 const picks = $("[data-g]");
 for (const c of picks) c.onchange = () => {
 	const g = groups[c.dataset.g];
-	g.tr.hidden = !c.checked;
-	for (const cells of cellsOf.values()) cells[g.i].hidden = !c.checked;
-	bounds();
+	g.on = c.checked;
+	g.tr.classList.toggle("off", !g.on);
+	for (const cells of cellsOf.values()) cells[g.i].hidden = !g.on;
+	place();
 };
 const rows = $("#mx tbody tr");
 const text = rows.map(r => [r.querySelector("summary span"), r.querySelector(".note")].map(e => e.textContent).join(" ").concat(" ", r.dataset.f).toLowerCase());
 const q = byId("q"), fam = byId("fam"), exp = $("[data-e]");
 function filter() {
-	const L = lens(), s = q.value.toLowerCase(), on = new Set(exp.filter(e => e.checked).map(e => e.dataset.e));
-	rows.forEach((r, i) => r.hidden = !(text[i].includes(s) && on.has(r.dataset["e" + L]) && (!fam.value || r.dataset.f == fam.value)));
+	const eds = ticked("mx"), all = ["2", "3"], s = q.value.toLowerCase(), on = new Set(exp.filter(e => e.checked).map(e => e.dataset.e));
+	const shown = eds.length ? eds : all;
+	rows.forEach((r, i) => r.hidden = !(text[i].includes(s) && shown.some(L => on.has(r.dataset["e" + L])) && (!fam.value || r.dataset.f == fam.value)));
 }
 for (const s of $(".fam")) {
 	const b = document.createElement("button");
@@ -619,13 +697,13 @@ for (const s of $(".fam")) {
 	b.onclick = () => { fam.value = s.textContent; filter(); byId("results").scrollIntoView(); };
 	s.replaceWith(b);
 }
-for (const r of $("[name=lens]")) r.onchange = () => { if (sortBy.value == "v") sort(); filter(); };
+for (const e of $("[id^=viol-e]")) e.addEventListener("change", () => { if (sortBy.value == "v") sort(); });
+for (const e of $("[id^=mx-e]")) e.addEventListener("change", filter);
 sortBy.onchange = sort;
 q.oninput = fam.onchange = filter;
 for (const e of exp) e.onchange = filter;
 sort();
 filter();
-for (const c of picks) c.onchange();
 """
 
 

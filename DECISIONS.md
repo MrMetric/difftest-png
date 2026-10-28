@@ -266,8 +266,19 @@ are memory-capped so a runaway decoder can't take down the rest of the system.
 ## The report
 
 The report is one HTML file with everything inline, in a dark theme. It reads completely without
-JavaScript: the lens switch and the "only failing tests" filter are CSS. The script adds what CSS
-can't: sorting columns, hiding columns, and filtering rows by text, expectation class and family.
+JavaScript: the edition checkboxes and the "only failing tests" filter are CSS. The script adds
+what CSS can't: sorting columns, hiding columns, and filtering rows by text, expectation class and
+family.
+
+Each table has its own checkbox per edition and shows the ticked ones, so a reader can flip
+editions where the difference is. The violations and family tables show a block of rows per
+edition, labelled down the side. The matrix keeps one row per test and splits a cell into one
+glyph per edition where the editions disagree, because only a handful of files differ and a second
+row per test would bury them.
+
+The matrix's rows are CSS grids with content-visibility, not table rows, under the table markup.
+Re-sorting or hiding its columns then changes a few CSS variables instead of moving thousands of
+cells, and the browser lays out only the rows on screen, which makes the change immediate.
 
 Columns come in three kinds, the reference, validators and decoders, in that order, with a
 heavier border between them. A validator's accept and a decoder's correct pixels are different
