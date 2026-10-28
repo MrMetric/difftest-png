@@ -693,20 +693,37 @@ for (const c of picks) c.onchange = () => {
 	g.tr.classList.toggle("off", !g.on);
 	for (const cells of cellsOf.values()) cells[g.i].hidden = !g.on;
 	place();
+	filter();
 };
 const rows = $("#mx tbody tr");
 const text = rows.map(r => [r.querySelector("summary span"), r.querySelector(".note")].map(e => e.textContent).join(" ").concat(" ", r.dataset.f).toLowerCase());
+// Which columns fail each row under each edition, read once from the cells' classes, so the failing-only filter
+// counts only the columns that are shown. The script then owns that filter: the rows' ok classes, which the CSS
+// filter uses without a script, come off.
+const SEV = ["must", "should", "fatal"], EDS = $("[id^=mx-e]").map(e => e.id.slice(-1));
+const fails = rows.map(r => {
+	const f = Object.fromEntries(EDS.map(L => [L, new Set()]));
+	for (const td of [...r.children].slice(1)) {
+		const col = +[...td.classList].find(c => /^c\\d+$/.test(c)).slice(1);
+		if (SEV.some(s => td.classList.contains(s))) { for (const L of EDS) f[L].add(col); continue; }
+		for (const i of td.children) if (SEV.some(s => i.classList.contains(s))) f[EDS.find(L => i.classList.contains("e" + L))].add(col);
+	}
+	return f;
+});
+for (const r of rows) r.classList.remove(...EDS.map(L => "ok" + L));
+const failing = byId("f");
 const q = byId("q"), fam = byId("fam"), exp = $("[data-e]");
 function filter() {
 	const eds = ticked("mx"), s = q.value.toLowerCase(), on = new Set(exp.filter(e => e.checked).map(e => e.dataset.e));
-	rows.forEach((r, i) => r.hidden = !(text[i].includes(s) && eds.some(L => on.has(r.dataset["e" + L])) && (!fam.value || r.dataset.f == fam.value)));
+	const fails_shown = i => eds.some(L => [...fails[i][L]].some(c => groups[c].on));
+	rows.forEach((r, i) => r.hidden = !(text[i].includes(s) && eds.some(L => on.has(r.dataset["e" + L])) && (!fam.value || r.dataset.f == fam.value)
+		&& (!failing.checked || fails_shown(i))));
 	count();
 }
 // How many rows the filters leave, whichever of them (script or CSS) hid the rest.
 const n = byId("n");
 function count() { n.textContent = `${rows.filter(r => r.checkVisibility()).length} of ${rows.length} tests`; }
-byId("f").addEventListener("change", count);
-for (const e of $("[id^=mx-e]")) e.addEventListener("change", count);
+failing.addEventListener("change", filter);
 for (const s of $(".fam")) {
 	const b = document.createElement("button");
 	b.textContent = s.textContent;
