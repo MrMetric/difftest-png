@@ -150,14 +150,29 @@ Memory errors are found by running each native-code decoder under valgrind memch
 separate pass. Valgrind works on unmodified binaries and catches reads of uninitialized memory,
 which AddressSanitizer misses.
 
-Each decoder is driven the way its documentation says to use it. If that still can't produce
-correct output, the report shows it as a `shim` failure.
+Each decoder is driven the way its documentation says to use it.
 
-A shim measures the decoder, not itself. It holds one row and writes rows out as the decoder
-produces them, so it can't run out of memory where the decoder wouldn't. A decoder whose API
-only hands over whole images allocates them itself, and that is its own result. An error the
-decoder raises after the last row counts as an error like any other. Whether the rows already
-decoded are good enough is the application's decision, and the shim doesn't make it.
+A library that returns without error but without an image gets an `api` result, a
+must-violation under both lenses whatever the file permits: too few rows, a frame that is
+not the canvas, an empty image for a zero width, `nil` where a pixel should be. The library
+did not reject the file, so the shim does not report a rejection; it reports what was
+missing. A failure of the shim itself is `shim`: not scored, listed under the run's problems,
+and fixed.
+
+A shim measures the decoder, not itself. It holds a bounded band of rows, never the image,
+and writes rows out as the decoder produces them. It applies nothing the library hands back
+as data, such as a transparency key, so what the library left undone shows in the results. A decoder whose API only hands over whole
+images allocates them itself, and that is its own result. An error the decoder raises after
+the last row counts as an error like any other. The shim takes the step after the rows that
+the library's own whole-image call takes, and no other: libpng's reads to the end of the
+datastream, libspng's and the png crate's do not. Whether the rows already decoded are good enough is
+the application's decision, and the shim doesn't make it.
+
+Each column records its library's diagnostic channel, or that it has none, so a silent
+accept reads as the library's choice rather than the shim's.
+
+An APNG is decoded the way any PNG is. A library whose plain path yields an animation
+frame instead of the default image shows that in its results; the shim does not steer it.
 
 Some differences are recorded without counting as failures. The color under fully transparent
 pixels may be preserved, zeroed or changed to something else. The last case is the surprising
@@ -318,8 +333,6 @@ The human disclaimer is written in the README, and the report copies it from the
 ## Still open
 
 - Recording documented deviations.
-- A shim audit: each shim relays its library's diagnostic channel, or the column records that the
-  library has none, so a silent accept can be read as the library's choice rather than the shim's.
 - A license for the repo.
 - A script to clone and build upstream development versions, possibly with sanitizer builds.
 - APNG frames, color management and encoders.

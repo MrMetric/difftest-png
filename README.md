@@ -27,6 +27,10 @@ reference decoder, and `--rerun IMPL ...` runs the named ones afresh (do that af
 or upgrading one). A program that is not installed (or a shim whose library is missing, exit
 127) is skipped with a notice rather than judged.
 
+After editing shims, use `--rebuild IMPL ...` to rebuild the affected compiled or copied
+adapters (including HEAD variants), and run them fresh. `--rebuild` alone rebuilds all
+selected implementations. Cached results do not fingerprint source files or binaries.
+
 Linux only (the runner uses `resource` limits). Needs Python via `uv`; each implementation
 needs its own toolchain:
 
@@ -118,7 +122,7 @@ skipped when it does not hold them. A script to clone and build them is not writ
 - `pnglens.py` reads the reference's record through each lens, and with `--lens` is the decoder
   behind the `reference-2` and `reference-3` columns; `test_pnglens.py` its tests
 - `impls.toml`, `impls/` the implementations and the shim each one runs through
-  (`impls/CONTRACT.md`)
+  (`impls/CONTRACT.md`), including their API choices and diagnostic channels
 - `synth.py` writes the suite, `decode/` and its manifest, from `picture.py`, with `pngbuild.py`
   (PNG encoding: packing, filtering, Adam7, chunks) and `deflate.py` (hand-written DEFLATE streams
   in the shapes zlib never emits); three of its files come from `zopfli`, `libdeflate-gzip` and

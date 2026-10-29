@@ -20,7 +20,7 @@ REPO = "https://github.com/MrMetric/difftest-png"
 README = Path(__file__).with_name("README.md")
 # glyph per outcome; color comes from severity
 GLYPH = {"pixels": "✓", "reject": "R", "wrong": "≠", "accept": "A", "crash": "☠", "memory": "M",
-	"timeout": "⧗", "oom": "∞", "shim": "S"}
+	"timeout": "⧗", "oom": "∞", "api": "!", "shim": "S"}
 OUTCOME_TEXT = {
 	"pixels": "decoded to the pixels of one of the reference's interpretations; a validator: accepted a conforming file",
 	"reject": "rejected the file",
@@ -30,7 +30,8 @@ OUTCOME_TEXT = {
 	"memory": "memory error under valgrind memcheck",
 	"timeout": "timed out",
 	"oom": "ran out of memory",
-	"shim": "the wrapper could not use the library's output",
+	"api": "returned without error, but not an image: wrong size, missing rows or non-numeric samples",
+	"shim": "the wrapper itself failed; not scored, listed under problems",
 }
 # an output whose label rates arguable is marked with a letter per topic of its arguable choices
 TOPIC = {"trns": ("t", "one of several tRNS chunks used"), "crc": ("c", "a chunk with a bad CRC used as stored"),
@@ -39,9 +40,10 @@ TOPIC = {"trns": ("t", "one of several tRNS chunks used"), "crc": ("c", "a chunk
 # key is the reference without the `§` (references())
 REF = re.compile(r"(?:(?:2nd ed\.|RFC 195[01]|Extensions(?: 1\.5\.0)?|GIF89a) )?§\d+(?:\.\d+)*(?: Table \d+)?")
 SEVERITY_STYLE = {"pass": "color:#7c7", "should": "color:#eb5;background:#332a10", "must": "color:#f66;background:#3a1515",
-	"fatal": "color:#fff;background:#a0206a"}
+	"fatal": "color:#fff;background:#a0206a", "api": "color:#fff;background:#c0181c", "shim": "color:#aaa;background:#333"}
 SEVERITY_TEXT = {"pass": "pass", "should": "should-violation", "must": "must-violation",
-	"fatal": "crash, hang, out of memory or memory error (a must-violation)"}
+	"fatal": "crash, hang, out of memory or memory error (a must-violation)", "api": "no usable image returned (a must-violation)",
+	"shim": "wrapper failure (not scored)"}
 THUMB_PX = 60  # the height of an output's thumbnail
 EDITION = {"2": "2nd edition", "3": "3rd edition"}  # the lens names a reader sees
 CSS = """
@@ -229,7 +231,7 @@ def split_td(per_lens: dict[str, tuple[str, str]], extra: str = "", cls: str = "
 def cell(r: dict, lenses: list[str], ratings: dict[str, str], col: int) -> str:
 	"""One matrix cell in column group `col`: under each edition, the outcome's glyph colored by its severity (no
 	class for a pass, the column's default); a crash, hang or out-of-memory is `fatal`, and a memory error shows as
-	M whatever the pixels. The arguable marks are edition-independent."""
+	M whatever the pixels; `api` and `shim` are their own classes. The arguable marks are edition-independent."""
 	mark = marks(r, ratings) if "memory" not in r else ""
 	sup = f"<sup>{mark}</sup>" if mark else ""
 	if "memory" in r:
@@ -237,7 +239,7 @@ def cell(r: dict, lenses: list[str], ratings: dict[str, str], col: int) -> str:
 	per = {}
 	for lens in lenses:
 		o = outcome(r, lens)
-		sev = "fatal" if o in ("crash", "timeout", "oom") else r["severity"][lens]
+		sev = "fatal" if o in ("crash", "timeout", "oom") else "api" if o == "api" else r["severity"][lens]
 		per[lens] = ("" if sev == "pass" else sev, GLYPH[o])
 	return split_td(per, sup, f"c{col}")
 
@@ -261,15 +263,23 @@ def violation(test: dict, impl: dict, r: dict, lens: str) -> str | None:
 	- `rejected` (valid file rejected): outcome reject with E display.
 	- `accepted` (invalid file accepted): outcome accept with E must-reject.
 	- `wrong` (wrong pixels): outcome wrong, E display, recover or may-reject.
-	- `fatal`: outcome crash, timeout, oom or shim, any E; or a memory error under valgrind, any outcome.
+	- `fatal`: outcome crash, timeout or oom, any E; or a memory error under valgrind, any outcome.
+	- `api`: outcome api (no usable image returned), any E.
 	- `should` (recoverable file rejected): outcome reject with E recover.
 	A validator is judged on whether the file conforms: `rejected` is a reject of a conforming file that
 	carries no strict note, `accepted` an accept of a file that does not conform (outcome accept), and
-	`fatal` as for a decoder. Every must-violation is in exactly one of the first four."""
+	`fatal` and `api` as for a decoder. A wrapper failure (outcome shim) is not a violation. Every
+	must-violation is in exactly one of the five kinds."""
 	o, sev, e = outcome(r, lens), r["severity"][lens], test["expectation"][lens]
-	if "memory" in r or o in ("crash", "timeout", "oom", "shim"):
+	if "memory" in r or o in ("crash", "timeout", "oom"):
 		assert sev == "must", (test["id"], impl["name"], r)
 		return "fatal"
+	if o == "api":
+		assert sev == "must", (test["id"], impl["name"], r)
+		return "api"
+	if o == "shim":
+		assert sev == "shim", (test["id"], impl["name"], r)
+		return None
 	if sev == "pass":
 		return None
 	if impl["pixels"]:
@@ -282,7 +292,7 @@ def violation(test: dict, impl: dict, r: dict, lens: str) -> str | None:
 
 
 SUMMARY = {"rejected": "valid file rejected", "accepted": "invalid file accepted", "wrong": "wrong pixels",
-	"fatal": "crash, hang, out of memory, memory error or shim failure", "should": "recoverable file rejected"}
+	"fatal": "crash, hang, out of memory or memory error", "api": "no usable image returned", "should": "recoverable file rejected"}
 
 
 def counts(report: dict, impl: dict) -> dict[str, dict[str, int]]:
@@ -435,9 +445,9 @@ def families(report: dict) -> list[str]:
 
 
 def feature_table(report: dict, groups: list[list[dict]]) -> str:
-	"""Per family and column group, under each edition: n/m, the n of the family's m tests the group fails (must or
-	should), colored by the worst severity; a pass glyph when n is 0. A block of rows per edition, labelled down
-	its side; edition_css() shows the ticked ones."""
+	"""Per family and column group, under each edition: n/m, the n of the family's m judged tests the group fails
+	(must or should), colored by the worst severity; a pass glyph when n is 0; blank when a wrapper failure left
+	nothing judged. A block of rows per edition, labelled down its side; edition_css() shows the ticked ones."""
 	lenses = report["lenses"]
 	bounds = boundaries(groups)
 	fams = families(report)
@@ -449,10 +459,10 @@ def feature_table(report: dict, groups: list[list[dict]]) -> str:
 			cells = []
 			for col, g in enumerate(groups):
 				rs = report["results"][g[0]["name"]]
-				sev = [rs[t["id"]]["severity"][lens] for t in tests]
+				sev = [rs[t["id"]]["severity"][lens] for t in tests if rs[t["id"]]["severity"][lens] != "shim"]
 				n = sum(x != "pass" for x in sev)
 				cls = ("must" if "must" in sev else "should") if n else "pass"
-				cells.append(f"<td class='{cls}{' kb' if col in bounds else ''}'>{f'{n}/{len(tests)}' if n else '✓'}</td>")
+				cells.append(f"<td class='{cls}{' kb' if col in bounds else ''}'>{f'{n}/{len(sev)}' if n else '✓' if sev else ''}</td>")
 			side = f"<th class=ed rowspan={len(fams)}><span>{EDITION[lens]}</span></th>" if row == 0 else ""
 			out.append(f"<tr>{side}<th><span class=fam>{esc(fam)}</span></th>{''.join(cells)}</tr>")
 		out.append("</tbody>")
@@ -481,16 +491,18 @@ def implementations_table(report: dict, groups: list[list[dict]]) -> str:
 	lenses = report["lenses"]
 	order = {i["name"]: n for n, i in enumerate(report["implementations"])}
 	first = {kind(g[0]): g for g in reversed(groups)}  # the first group of each kind
-	out = ["<h2>Implementations</h2><table class=s id=sum><thead><tr><th class=js hidden>show</th><th>implementation</th><th>version</th><th>lineage</th></tr></thead><tbody>"]
+	out = ["<h2>Implementations</h2><table class=s id=sum><thead><tr><th class=js hidden>show</th><th>implementation</th><th>version</th><th>lineage</th><th>diagnostics</th></tr></thead><tbody>"]
 	for n, g in enumerate(groups):
 		s = g[0]["summary"]
 		names = "<br>".join(esc(i["name"]) for i in g)
 		vers = "<br>".join(esc(i["revision"] or i["version"] or "") for i in g)
+		# report.py also renders saved JSON from before diagnostic metadata was recorded.
+		diagnostics = "<br>".join(esc(v) for v in dict.fromkeys(i.get("diagnostics", "not recorded") for i in g))
 		sort = "".join(f" data-m{lens}={s[lens]['must']} data-s{lens}={s[lens]['should']}" for lens in lenses)
 		k = KINDS.index(kind(g[0]))
 		kb = " class=kb" if first[kind(g[0])] is g and k else ""
 		out.append(f"<tr{kb}{sort} data-o={order[g[0]['name']]} data-k={k} data-n='{esc(g[0]['name'])}'><td class=js hidden><input type=checkbox checked data-g={n}></td>"
-			f"<td title='{esc(g[0]['notes'])}'>{names}</td><td>{vers}</td><td>{esc(g[0]['lineage'])}</td></tr>")
+			f"<td title='{esc(g[0]['notes'])}'>{names}</td><td>{vers}</td><td>{esc(g[0]['lineage'])}</td><td>{diagnostics}</td></tr>")
 	return "".join(out) + "</tbody></table>"
 
 
@@ -515,7 +527,7 @@ def violations_table(report: dict, groups: list[list[dict]]) -> str:
 			side = f"<th class=ed rowspan={len(rows)}><span>{EDITION[lens]}</span></th>" if row == 0 else ""
 			out.append(f"<tr>{side}<th>{esc(name)}</th>{''.join(cells)}</tr>")
 		out.append("</tbody>")
-	out.append("</table><p>The first four rows are must-violations and the fifth should-violations. "
+	out.append("</table><p>The first five rows are must-violations and the sixth should-violations. "
 		"<b>silent</b>: the column accepted a file that does not conform and said nothing about it; a count, not a violation. "
 		"<b>strict</b>: a validator rejected a file that conforms, over a name a strict reading of the naming rules may flag "
 		"(iDOT's unregistered public name); recorded, not a violation.</p>")
@@ -603,7 +615,7 @@ def render(report: dict) -> str:
 		f"<style id=dyn>{matrix_vars(groups)}</style>"]
 	out.append(f"""<h1>PNG decoder conformance</h1>
 <p>Every decoder below was run over the same {len(tests)} small PNG files from <a href="{REPO}">difftest-png</a>, each one built to test one rule of the PNG specification or one behavior on which some decoder deviates. Run {esc(report['generated'])} on {esc(report['host'])}.</p>
-<p>Each result is rated under each lens: <b>pass</b>, <b class=should>should</b> (the specification says a decoder should do otherwise, e.g. recover a recoverable fault instead of rejecting the image) or <b class=must>must</b> (a requirement is broken: wrong pixels, an invalid file accepted, a valid file rejected, a crash, a hang, a memory error). Warnings never count against a decoder. Running out of memory counts like a crash: a file should be rejected with an error, and a decoder that instead exhausts its host hands every program that opens untrusted images a denial of service. Pixels are compared as 16-bit RGBA with no color management; color under fully transparent pixels and the 8-bit reduction of 16-bit images are recorded as properties, not failures. Validators (pngcheck) are judged on a different question: whether each file conforms to the specification. Some files a decoder must still display do not conform, for example one with a chunk name the specification reserves.</p>
+<p>Each result is rated under each lens: <b>pass</b>, <b class=should>should</b> (the specification says a decoder should do otherwise, e.g. recover a recoverable fault instead of rejecting the image) or <b class=must>must</b> (a requirement is broken: wrong pixels, an invalid file accepted, a valid file rejected, a result that is not an image, a crash, a hang, a memory error). Warnings never count against a decoder. Running out of memory counts like a crash: a file should be rejected with an error, and a decoder that instead exhausts its host hands every program that opens untrusted images a denial of service. Pixels are compared as 16-bit RGBA with no color management; color under fully transparent pixels and the 8-bit reduction of 16-bit images are recorded as properties, not failures. Validators (pngcheck) are judged on a different question: whether each file conforms to the specification. Some files a decoder must still display do not conform, for example one with a chunk name the specification reserves.</p>
 <p>Two editions of the specification matter: the second (ISO/IEC 15948:2003; PNG 1.0 and 1.1 count as the second) and the third (W3C, 2025). A lens is an edition's text plus the extensions: the W3C registered extensions, Apple's iDOT, and under the second edition the chunks the third edition added (APNG, cICP, mDCV, cLLI, eXIf). Every result is rated through both lenses separately; each table has a checkbox per edition, and shows the ticked ones. There is no single verdict: following one edition rather than the other is not a defect. The two ratings differ only where the texts contradict each other, which they do in one place: a palette index past the end of PLTE is an error in the second edition and renders opaque black in the third.</p>
 <p>Not tested: animation frames after the default image, color management (gAMA, cHRM, iCCP, sRGB, cICP, sBIT), encoders, performance. Passing every test means the suite is incomplete, not that the decoder is perfect.</p>""")
 	if report["problems"]:
@@ -700,7 +712,7 @@ const text = rows.map(r => [r.querySelector("summary span"), r.querySelector(".n
 // Which columns fail each row under each edition, read once from the cells' classes, so the failing-only filter
 // counts only the columns that are shown. The script then owns that filter: the rows' ok classes, which the CSS
 // filter uses without a script, come off.
-const SEV = ["must", "should", "fatal"], EDS = $("[id^=mx-e]").map(e => e.id.slice(-1));
+const SEV = ["must", "should", "fatal", "api"], EDS = $("[id^=mx-e]").map(e => e.id.slice(-1));
 const fails = rows.map(r => {
 	const f = Object.fromEntries(EDS.map(L => [L, new Set()]));
 	for (const td of [...r.children].slice(1)) {

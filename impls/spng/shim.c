@@ -4,10 +4,11 @@
  * with SPNG_DECODE_TRNS so tRNS becomes alpha (spng does not apply it unless
  * asked). No gamma flag. CRC actions and limits are libspng's defaults.
  * Rows are decoded one at a time (SPNG_DECODE_PROGRESSIVE, spng_decode_row)
- * and written out as they arrive, so the shim holds one row and never the
- * image. libspng puts an interlace pass's pixels at their columns inside a
+ * and written out as they arrive, with a decode row and a merge row, never
+ * another image. libspng puts an interlace pass's pixels at their columns inside a
  * full-width row buffer; the shim packs them and places them in the output
- * row. Any error libspng reports is ERR and exit 1.
+ * row. Nothing is read after the rows: spng_decode_image reads nothing after them
+ * either. Any error libspng reports is ERR and exit 1.
  */
 #include "../pam_rows.h"
 #include <spng.h>
@@ -19,6 +20,12 @@ static int fail(const char *msg)
 {
 	printf("ERR %s\n", msg);
 	return 1;
+}
+
+static int shim_fail(const char *msg)
+{
+	printf("SHIM %s\n", msg);
+	return 70;
 }
 
 int main(int argc, char **argv)
@@ -33,8 +40,9 @@ int main(int argc, char **argv)
 	}
 	FILE *in = fopen(argv[1], "rb");
 	if (!in)
-		return fail("cannot open input");
+		return shim_fail("cannot open input");
 	spng_ctx *ctx = spng_ctx_new(0);
+	if (!ctx) return fail("out of memory creating decoder");
 	int r = spng_set_png_file(ctx, in);
 	if (r)
 		return fail(spng_strerror(r));
@@ -51,10 +59,10 @@ int main(int argc, char **argv)
 		return fail(spng_strerror(r));
 	unsigned char *row = malloc(rowlen), *scratch = malloc(rowlen);
 	if (!row || !scratch)
-		return fail("out of memory for one row");
+		return shim_fail("out of memory for one row");
 	struct pam_out out;
 	if (pam_open(&out, argv[2], ihdr.width, ihdr.height, 4, fmt == SPNG_FMT_RGBA16 ? 65535 : 255))
-		return fail("cannot open output");
+		return shim_fail("cannot open output");
 	for (;;) {
 		struct spng_row_info ri;
 		r = spng_get_row_info(ctx, &ri);
@@ -85,12 +93,16 @@ int main(int argc, char **argv)
 			? pam_pass_row(&out, ri.pass, (ri.row_num - PAM_ADAM7[ri.pass][1]) / PAM_ADAM7[ri.pass][3], row, n, scratch)
 			: pam_row(&out, ri.row_num, row);
 		if (w)
-			return fail("cannot write output");
+			return shim_fail("cannot write output");
 		if (r == SPNG_EOI)
 			break;
 	}
 	if (pam_close(&out))
-		return fail("output incomplete");
+		return shim_fail("output incomplete");
+	free(row);
+	free(scratch);
+	spng_ctx_free(ctx);
+	fclose(in);
 	printf("OK %u %u 4 %d\n", ihdr.width, ihdr.height, fmt == SPNG_FMT_RGBA16 ? 16 : 8);
 	return 0;
 }

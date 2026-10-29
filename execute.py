@@ -36,11 +36,13 @@ STORE = ROOT / "out" / "runs.sqlite"
 # valgrind finds glibc's debug information in the installed glibc-debug package, never over the network:
 # DEBUGINFOD_URLS is deliberately absent.
 BASE_ENV = {"PATH": "/usr/bin", "HOME": str(Path.home()), "LANG": "C.UTF-8"}
-MEM_PAT = re.compile(r"out of memory|cannot allocate|allocation .*failed|memory allocation|alloc(ation)? of \d+ bytes", re.I)
+MEM_PAT = re.compile(r"out\s*of\s*memory|outofmem\b|MemoryError|bad_alloc|cannot allocate|allocation .*failed|memory allocation|alloc(ation)? of \d+ bytes", re.I)
 FSIZE_LIMIT = 1 << 30
 CAPTURE_LIMIT = 16 * 1024
 VALGRIND_ERR = 99
 NOT_INSTALLED = 127
+SHIM_FAILURE = 70  # the adapter itself failed: not scored, a problem to fix
+API_FAILURE = 71  # the library returned without error, but not an image: its result, a must-violation
 # About five times the slowest memcheck run that completes on the suite (25 s); a run that needs longer is hung.
 MEMCHECK_TIMEOUT_S = 120.0
 
@@ -135,33 +137,49 @@ def run_limited(argv: list[str], *, cwd: Path, env: dict[str, str], timeout_s: f
 	return p.returncode, None, False
 
 
-def read_capped(p: Path) -> str:
-	data = p.read_bytes() if p.exists() else b""
-	text = data[:CAPTURE_LIMIT].decode("utf-8", "replace")
-	return text + (f"\n[... {len(data) - CAPTURE_LIMIT} more bytes]" if len(data) > CAPTURE_LIMIT else "")
+def diagnostics(path: Path, *, stderr: bool = False) -> dict:
+	"""Scan output once, keeping a capped display prefix and bounded diagnostic messages.
+
+	The display cap must not hide a later WARN, the actual ERR, or allocation failure.
+	Messages themselves retain at most CAPTURE_LIMIT bytes from their line.
+	"""
+	result = {"text": "", "warning": None, "error": None, "last": None, "oom": False}
+	if not path.exists():
+		return result
+	with path.open("rb") as f:
+		capture, total = bytearray(), 0
+		head, message, tail = b"", "", ""
+		while part := f.readline(CAPTURE_LIMIT):
+			capture.extend(part[:CAPTURE_LIMIT - len(capture)])
+			total += len(part)
+			if len(head) < CAPTURE_LIMIT:
+				head += part[:CAPTURE_LIMIT - len(head)]
+			text = part.decode("utf-8", "replace")
+			# Keep a diagnostic even if indentation fills the entire display prefix.
+			message = message or text.strip()
+			result["oom"] |= bool(MEM_PAT.search(tail + text))
+			tail = (tail + text)[-256:]
+			if part.endswith(b"\n"):
+				_record_line(result, head.decode("utf-8", "replace"), message, stderr)
+				head, message = b"", ""
+		if head:
+			_record_line(result, head.decode("utf-8", "replace"), message, stderr)
+	result["text"] = capture.decode("utf-8", "replace")
+	if total > CAPTURE_LIMIT:
+		result["text"] += f"\n[... {total - CAPTURE_LIMIT} more bytes]"
+	return result
 
 
-def message(stdout: str, stderr: str, code: int | None) -> str:
-	errs = [l[4:].strip() for l in stdout.splitlines() if l.startswith("ERR ")]
-	if errs:
-		return errs[-1]
-	for src in (stderr, stdout):
-		lines = [l.strip() for l in src.splitlines() if l.strip()]
-		if lines:
-			return lines[-1]
-	return f"exit {code}"
-
-
-def first_warning(stdout: str, stderr: str) -> str | None:
-	"""The first diagnostic: a WARN or ERR line of stdout (an ERR line on a successful exit is a diagnostic
-	too), else the first line of stderr."""
-	for line in stdout.splitlines():
-		if line.startswith(("WARN ", "ERR ")):
-			return line.split(" ", 1)[1].strip()
-	for line in stderr.splitlines():
-		if line.strip():
-			return line.strip()
-	return None
+def _record_line(result: dict, line: str, message: str, stderr: bool) -> None:
+	if message:
+		result["last"] = message
+		if result["warning"] is None:
+			if stderr:
+				result["warning"] = message
+			elif line.startswith(("WARN ", "ERR ")):
+				result["warning"] = line.split(" ", 1)[1].strip()
+	if line.startswith(("ERR ", "SHIM ", "API ")):
+		result["error"] = line.split(" ", 1)[1].strip()
 
 
 def _memcheck(td: Path, code: int | None, timed_out: bool) -> dict:
@@ -203,22 +221,27 @@ def _execute(impl, file: Path, memcheck: bool) -> tuple[dict, bool]:
 		t0 = time.monotonic()
 		code, sig, timed_out = run_limited(argv, cwd=td, env=child_env(impl), timeout_s=timeout, mem_bytes=mem)
 		seconds = round(time.monotonic() - t0, 3)  # wall time, measured on a machine running other columns too
-		stdout, stderr = read_capped(td / "stdout"), read_capped(td / "stderr")
-		if code == NOT_INSTALLED:
-			raise Missing(message(stdout, stderr, code))
-		if memcheck:
+		if memcheck and code != NOT_INSTALLED:
 			return _memcheck(td, code, timed_out) | {"seconds": seconds}, timed_out
-		text = stdout + "\n" + stderr
-		row = {"stdout": stdout, "stderr": stderr, "image": None, "maxval": None, "warning": first_warning(stdout, stderr), "seconds": seconds}
+		so, se = diagnostics(td / "stdout"), diagnostics(td / "stderr", stderr=True)
+		reason = so["error"] or se["last"] or so["last"] or f"exit {code}"
+		if code == NOT_INSTALLED:
+			raise Missing(reason)
+		oom = so["oom"] or se["oom"]
+		row = {"stdout": so["text"], "stderr": se["text"], "image": None, "maxval": None, "warning": so["warning"] or se["warning"], "seconds": seconds}
 		if timed_out:
 			return row | {"verdict": "timeout", "detail": f"killed after {impl.timeout_s:g} s"}, True
 		if sig is not None:
 			name = signal.Signals(sig).name if sig in signal.Signals._value2member_map_ else f"signal {sig}"
 			if sig == signal.SIGXFSZ:
-				return row | {"verdict": "reject", "detail": "output exceeded the size limit"}, False
-			return row | {"verdict": "oom" if MEM_PAT.search(text) else "crash", "detail": f"{name}: {message(stdout, stderr, None)}"}, False
+				return row | {"verdict": "shim", "detail": "output exceeded the size limit"}, False
+			return row | {"verdict": "oom" if oom else "crash", "detail": f"{name}: {reason}"}, False
+		if code == API_FAILURE:
+			return row | {"verdict": "api", "detail": reason}, False
+		if code == SHIM_FAILURE:
+			return row | {"verdict": "shim", "detail": reason}, False
 		if code != 0:
-			return row | {"verdict": "oom" if MEM_PAT.search(text) else "reject", "detail": message(stdout, stderr, code)}, False
+			return row | {"verdict": "oom" if oom else "reject", "detail": reason}, False
 		if not impl.pixels:
 			return row | {"verdict": "accept", "detail": row["warning"]}, False
 		if not out_path.exists() or out_path.stat().st_size == 0:

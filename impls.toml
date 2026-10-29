@@ -9,6 +9,7 @@
 # memcheck  run under valgrind memcheck in the memory pass (native code only)
 
 [reference-2]
+diagnostics = "WARN/ERR protocol"
 project = "reference"
 variant = "lens 2"
 lineage = "this project"
@@ -18,6 +19,7 @@ version = ["{python}", "refpng.py", "--version"]
 timeout_s = 120
 
 [reference-3]
+diagnostics = "WARN/ERR protocol"
 project = "reference"
 variant = "lens 3"
 lineage = "this project"
@@ -27,6 +29,7 @@ version = ["{python}", "refpng.py", "--version"]
 timeout_s = 120
 
 [libpng]
+diagnostics = "warning and error callbacks"
 project = "libpng"
 variant = "release"
 lineage = "libpng"
@@ -37,36 +40,40 @@ build = ["make", "-s", "-C", "impls/libpng"]
 memcheck = true
 
 [stb_image]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "stb_image"
 variant = "release"
 lineage = "stb"
-notes = "single-header, ignores CRCs, de-iPhones CgBI"
+notes = "single-header, ignores CRCs; CgBI conversion and unpremultiplication disabled by default"
 cmd = ["impls/stb/shim", "{input}", "{output}"]
 version = ["impls/stb/shim", "--version"]
 build = ["make", "-s", "-C", "impls/stb"]
 memcheck = true
 
 [rust-png]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "rust-png"
 variant = "release"
 lineage = "image-rs"
-notes = "png crate, Transformations::EXPAND, default limits; rows read one at a time with next_interlaced_row."
+notes = "png crate, Transformations::EXPAND, default limits; rows read one at a time with next_interlaced_row; nothing is read after the rows, as in the crate's documented use."
 cmd = ["impls/rust-png/target/release/rust-png-shim", "{input}", "{output}"]
 version = ["cargo", "pkgid", "--manifest-path", "impls/rust-png/Cargo.toml", "png"]
 build = ["cargo", "build", "--release", "--quiet", "--manifest-path", "impls/rust-png/Cargo.toml"]
 memcheck = true
 
 [ffmpeg]
+diagnostics = "stderr warnings and errors"
 project = "ffmpeg"
 variant = "release"
 lineage = "ffmpeg"
-notes = "ffmpeg's own pngdec via the CLI, first frame, PAM muxer. Output pinned to rgba|rgba64be: left to itself the CLI negotiates pal8-with-alpha to rgb24 and drops the alpha, and swscale's 8->16 is not x*257, so neither auto nor forced-16 is faithful."
+notes = "ffmpeg's own pngdec via the CLI as it probes the file, first frame, PAM muxer: an APNG goes through its apng decoder, and the CLI applies eXIf orientation by default. Output pinned to rgba|rgba64be: left to itself the CLI negotiates pal8-with-alpha to rgb24 and drops the alpha, and swscale's 8->16 is not x*257, so neither auto nor forced-16 is faithful."
 cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-v", "warning", "-i", "{input}", "-vf", "format=rgba|rgba64be", "-frames:v", "1", "-update", "1", "-f", "image2", "-c:v", "pam", "-y", "{output}"]
 version = ["ffmpeg", "-version"]
 mem_mb = 4096
 memcheck = true
 
 [imagemagick]
+diagnostics = "stderr warnings and errors"
 project = "imagemagick"
 variant = "release"
 lineage = "libpng"
@@ -77,6 +84,7 @@ mem_mb = 4096
 memcheck = true
 
 [pngcheck]
+diagnostics = "stdout validation report and exit status"
 project = "pngcheck"
 variant = "release"
 lineage = "pngcheck"
@@ -87,6 +95,7 @@ version = ["pngcheck", "-h"]
 memcheck = true
 
 [lodepng]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "lodepng"
 variant = "release"
 lineage = "lodepng"
@@ -97,26 +106,29 @@ build = ["make", "-s", "-C", "impls/lodepng"]
 memcheck = true
 
 [libspng]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "libspng"
 variant = "release"
 lineage = "libspng"
-notes = "system libspng; SPNG_FMT_RGBA8/16 with SPNG_DECODE_TRNS, progressive: one row at a time with spng_decode_row"
+notes = "system libspng; SPNG_FMT_RGBA8/16 with SPNG_DECODE_TRNS, progressive: one row at a time with spng_decode_row; nothing is read after the rows, as spng_decode_image reads nothing after them either"
 cmd = ["impls/spng/shim", "{input}", "{output}"]
 version = ["impls/spng/shim", "--version"]
 build = ["make", "-s", "-C", "impls/spng"]
 memcheck = true
 
 [wuffs]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "wuffs"
 variant = "release"
 lineage = "wuffs"
-notes = "wuffs_aux::DecodeImage with default quirks and limits; non-premultiplied RGBA at source depth"
+notes = "wuffs_aux::DecodeImage with default quirks and limits; non-premultiplied RGBA at source depth; its default first-frame helper may leave trailing chunks unread"
 cmd = ["impls/wuffs/shim", "{input}", "{output}"]
 version = ["impls/wuffs/shim", "--version"]
 build = ["make", "-s", "-C", "impls/wuffs"]
 memcheck = true
 
 [zune-png]
+diagnostics = "errors only; upstream warning macros are no-ops"
 project = "zune-png"
 variant = "release"
 lineage = "zune"
@@ -127,6 +139,7 @@ build = ["cargo", "build", "--release", "--quiet", "--manifest-path", "impls/zun
 memcheck = true
 
 [go-png]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "go-png"
 variant = "release"
 lineage = "go"
@@ -136,10 +149,11 @@ version = ["impls/go-png/shim", "--version"]
 build = ["impls/go-png/build.sh", "build", "-o", "shim", "."]
 
 [java-imageio]
+diagnostics = "warning listener and exception causes"
 project = "java-imageio"
 variant = "release"
 lineage = "java"
-notes = "OpenJDK ImageIO PNG reader; raster written in native band order and sample size"
+notes = "OpenJDK ImageIO PNG reader; seekForwardOnly=true, ignoreMetadata=true as in ImageIO.read; warning listener installed; native raster samples"
 cmd = ["java", "-Xmx1g", "-Xss512k", "-XX:+UseSerialGC", "-XX:MaxMetaspaceSize=128m", "-XX:ReservedCodeCacheSize=32m", "-XX:CompressedClassSpaceSize=64m", "-XX:TieredStopAtLevel=1", "-cp", "impls/java", "ImageIOShim", "{input}", "{output}"]
 version = ["java", "-cp", "impls/java", "ImageIOShim", "--version"]
 creates = "impls/java/ImageIOShim.class"
@@ -148,10 +162,11 @@ mem_mb = 4096
 timeout_s = 60
 
 [imagesharp]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "imagesharp"
 variant = "release"
 lineage = "imagesharp"
-notes = "SixLabors.ImageSharp on .NET; Rgba32 or Rgba64 chosen from the IHDR depth"
+notes = "SixLabors.ImageSharp on .NET; Image.Load into the native pixel type, rows converted to RGBA at source precision. Load<Rgba32> is not used: it returns wrong alpha on tiny interlaced sub-byte gray files"
 cmd = ["impls/imagesharp/bin/publish/ImageSharpShim", "{input}", "{output}"]
 version = ["impls/imagesharp/bin/publish/ImageSharpShim", "--version"]
 build = ["dotnet", "publish", "impls/imagesharp", "-c", "Release", "-o", "impls/imagesharp/bin/publish", "-v", "q", "--nologo"]
@@ -161,16 +176,18 @@ mem_mb = 8192
 timeout_s = 60
 
 [fast-png]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "fast-png"
 variant = "release"
 lineage = "fast-png"
-notes = "image-js fast-png (JavaScript). fast-png returns grayscale/RGB tRNS to the caller instead of applying it; the shim applies it as a conforming caller would (masked to the bit depth), so tRNS results for those color types measure the shim's use of the interface."
+notes = "image-js fast-png (JavaScript). decode() returns a gray/RGB tRNS key as data and applies nothing, and its documentation says nothing about it; the shim applies nothing either, so those files show as wrong alpha. Palette images go through its exported convertIndexedToRgb. The result carries no color type, so a one-channel image with a palette is read as indexed, the way fast-png's own converter reads it."
 cmd = ["node", "impls/node/fast-png.mjs", "{input}", "{output}"]
 version = ["node", "impls/node/fast-png.mjs", "--version"]
 creates = "impls/node/node_modules"
 build = ["npm", "ci", "--silent", "--prefix", "impls/node"]
 
 [pngjs]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "pngjs"
 variant = "release"
 lineage = "pngjs"
@@ -181,6 +198,7 @@ creates = "impls/node/node_modules"
 build = ["npm", "ci", "--silent", "--prefix", "impls/node"]
 
 [upng]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "upng"
 variant = "release"
 lineage = "upng"
@@ -192,15 +210,17 @@ build = ["npm", "ci", "--silent", "--prefix", "impls/node"]
 max_depth = 8
 
 [pillow]
+diagnostics = "Python warnings and exceptions"
 project = "pillow"
 variant = "release"
 lineage = "pillow"
-notes = "Pillow's own PNG plugin (zlib, not libpng); convert('RGBA') for modes up to 8 bits, 16-bit gray kept; Pillow reads 16-bit RGB(A) as 8-bit"
+notes = "Pillow's own PNG plugin (zlib, not libpng); banded convert('RGBA') up to 8 bits; gray16 written as 16-bit without its tRNS key, which Pillow's convert() drops and the shim does not apply; Pillow reads 16-bit RGB(A) as 8-bit"
 cmd = ["{python}", "impls/pillow_shim.py", "{input}", "{output}"]
 version = ["{python}", "impls/pillow_shim.py", "--version"]
 max_depth = 8
 
 [pypng]
+diagnostics = "Python warnings and exceptions"
 project = "pypng"
 variant = "release"
 lineage = "pypng"
@@ -210,6 +230,7 @@ version = ["{python}", "impls/pypng_shim.py", "--version"]
 timeout_s = 120
 
 [opencv]
+diagnostics = "native stderr and errors"
 project = "opencv"
 variant = "release"
 lineage = "libpng"
@@ -220,6 +241,7 @@ env = { OPENBLAS_NUM_THREADS = "1", OMP_NUM_THREADS = "1", OPENCV_FOR_THREADS_NU
 mem_mb = 8192
 
 [chunky_png]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "chunky_png"
 variant = "release"
 lineage = "chunky_png"
@@ -230,15 +252,17 @@ max_depth = 8
 timeout_s = 120
 
 [pngtopam]
+diagnostics = "stderr warnings and errors"
 project = "pngtopam"
 variant = "release"
 lineage = "libpng"
-notes = "netpbm pngtopam -alphapam: libpng with netpbm's policies"
+notes = "netpbm pngtopam -alphapam: libpng with netpbm's policies, including uniform sBIT precision reduction"
 cmd = ["sh", "-c", "exec pngtopam -alphapam \"$1\" > \"$2\"", "pngtopam", "{input}", "{output}"]
 version = ["pngtopam", "--version"]
 memcheck = true
 
 [graphicsmagick]
+diagnostics = "stderr warnings and errors"
 project = "graphicsmagick"
 variant = "release"
 lineage = "libpng"
@@ -253,6 +277,7 @@ memcheck = true
 # Builds that fetch from the network: cargo, uv, dotnet, and imagesharp-head's SharedInfrastructure submodule.
 
 [libpng16-head]
+diagnostics = "warning and error callbacks"
 project = "libpng"
 variant = "HEAD"
 revision = "8c2a5fb 2026-10-21"
@@ -270,6 +295,7 @@ cc -O2 -Wall -Wextra -I{head}/ctools/libpng16 -I$d/build -o $d/shim impls/libpng
 memcheck = true
 
 [libpng18-head]
+diagnostics = "warning and error callbacks"
 project = "libpng"
 variant = "HEAD"
 revision = "682e5fe 2026-10-21"
@@ -287,11 +313,12 @@ cc -O2 -Wall -Wextra -I{head}/ctools/libpng -I$d/build -o $d/shim impls/libpng/s
 memcheck = true
 
 [stb_image-head]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "stb_image"
 variant = "HEAD"
 revision = "a7d4c21 2026-10-19"
 lineage = "stb"
-notes = "single-header, ignores CRCs, de-iPhones CgBI. stb_image.h at this revision is byte-identical to the vendored impls/stb/stb_image.h (v2.30). The shim source is copied into the column directory so its quoted #include \"stb_image.h\" resolves through -I to the clone's header, not the vendored copy beside impls/stb/shim.c."
+notes = "single-header, ignores CRCs; CgBI conversion and unpremultiplication disabled by default. stb_image.h at this revision is byte-identical to the vendored impls/stb/stb_image.h (v2.30). The shim source is copied into the column directory so its quoted #include \"stb_image.h\" resolves through -I to the clone's header, not the vendored copy beside impls/stb/shim.c."
 cmd = ["{head}/difftest/stb_image-head/shim", "{input}", "{output}"]
 version = ["{head}/difftest/stb_image-head/shim", "--version"]
 build = ["sh", "-ec", '''
@@ -304,11 +331,12 @@ cc -O2 -Wall -Wextra -Wno-unused-function -I{head}/clibs/stb -DSTB_VER="\"$v\"" 
 memcheck = true
 
 [rust-png-head]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "rust-png"
 variant = "HEAD"
 revision = "b2f10c6 2026-09-23"
 lineage = "image-rs"
-notes = "png crate, Transformations::EXPAND, default limits; rows read one at a time with next_interlaced_row. The shim crate patches crates.io png 0.18.1 with the master clone (path dependency); other dependencies from crates.io."
+notes = "png crate, Transformations::EXPAND, default limits; rows read one at a time with next_interlaced_row; nothing is read after the rows, as in the crate's documented use. The shim crate patches crates.io png 0.18.1 with the master clone (path dependency); other dependencies from crates.io."
 cmd = ["{head}/difftest/rust-png-head/target/release/rust-png-shim", "{input}", "{output}"]
 version = ["cargo", "pkgid", "--manifest-path", "{head}/difftest/rust-png-head/Cargo.toml", "png"]
 build = ["sh", "-ec", '''
@@ -322,17 +350,19 @@ cargo build --release --quiet --manifest-path $d/Cargo.toml
 memcheck = true
 
 [ffmpeg-head]
+diagnostics = "stderr warnings and errors"
 project = "ffmpeg"
 variant = "HEAD"
 revision = "179d083 2026-10-22"
 lineage = "ffmpeg"
-notes = "ffmpeg's own pngdec via the CLI, first frame, PAM muxer. Output pinned to rgba|rgba64be: left to itself the CLI negotiates pal8-with-alpha to rgb24 and drops the alpha, and swscale's 8->16 is not x*257, so neither auto nor forced-16 is faithful. Built in-tree in {head}/ffmpeg (static, --disable-everything plus the png/apng decoders, image2/apng/png_pipe demuxers, png parser, file protocol, image2 muxer, pam encoder, format/scale/null filters); no build step here because ffmpeg only builds in its own tree."
+notes = "ffmpeg's own pngdec via the CLI as it probes the file, first frame, PAM muxer: an APNG goes through its apng decoder, and the CLI applies eXIf orientation by default. Output pinned to rgba|rgba64be: left to itself the CLI negotiates pal8-with-alpha to rgb24 and drops the alpha, and swscale's 8->16 is not x*257, so neither auto nor forced-16 is faithful. Built in-tree in {head}/ffmpeg (static, --disable-everything plus the png/apng decoders, image2/apng/png_pipe demuxers, png parser, file protocol, image2 muxer, pam encoder, format/scale/null filters); no build step here because ffmpeg only builds in its own tree."
 cmd = ["{head}/ffmpeg/ffmpeg", "-nostdin", "-hide_banner", "-v", "warning", "-i", "{input}", "-vf", "format=rgba|rgba64be", "-frames:v", "1", "-update", "1", "-f", "image2", "-c:v", "pam", "-y", "{output}"]
 version = ["{head}/ffmpeg/ffmpeg", "-version"]
 mem_mb = 4096
 memcheck = true
 
 [imagemagick-head]
+diagnostics = "stderr warnings and errors"
 project = "imagemagick"
 variant = "HEAD"
 revision = "a0ac982 2026-10-22"
@@ -355,6 +385,7 @@ mem_mb = 4096
 memcheck = true
 
 [graphicsmagick-head]
+diagnostics = "stderr warnings and errors"
 project = "graphicsmagick"
 variant = "HEAD"
 revision = "hg 18216:0ca2165aa07c 2026-10-21"
@@ -376,6 +407,7 @@ mem_mb = 4096
 memcheck = true
 
 [pngcheck-head]
+diagnostics = "stdout validation report and exit status"
 project = "pngcheck"
 variant = "HEAD"
 revision = "bd33ad6 2025-12-15"
@@ -392,6 +424,7 @@ cc -pedantic-errors -Wall -Wextra -Wundef -O2 -o $d/pngcheck {head}/ctools/pngch
 memcheck = true
 
 [lodepng-head]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "lodepng"
 variant = "HEAD"
 revision = "e584a84 2026-10-06"
@@ -408,11 +441,12 @@ c++ -O2 -Wall -Wextra -I{head}/clibs/lodepng -o $d/shim $d/shim.cpp {head}/clibs
 memcheck = true
 
 [libspng-head]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "libspng"
 variant = "HEAD"
 revision = "46c81dc 2026-08-31"
 lineage = "libspng"
-notes = "SPNG_FMT_RGBA8/16 with SPNG_DECODE_TRNS, progressive: one row at a time with spng_decode_row. spng.c from the clone compiled into the shim with the defines its meson build uses on this host (zlib, target_clones); reports 0.7.4 like the release."
+notes = "SPNG_FMT_RGBA8/16 with SPNG_DECODE_TRNS, progressive: one row at a time with spng_decode_row; nothing is read after the rows, as spng_decode_image reads nothing after them either. spng.c from the clone compiled into the shim with the defines its meson build uses on this host (zlib, target_clones); reports 0.7.4 like the release."
 cmd = ["{head}/difftest/libspng-head/shim", "{input}", "{output}"]
 version = ["{head}/difftest/libspng-head/shim", "--version"]
 build = ["sh", "-ec", '''
@@ -423,11 +457,12 @@ cc -O2 -std=c99 -Wall -Wextra -DSPNG_STATIC -DSPNG_ENABLE_TARGET_CLONES -I{head}
 memcheck = true
 
 [wuffs-head]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "wuffs"
 variant = "HEAD"
 revision = "4be865d 2026-10-21"
 lineage = "wuffs"
-notes = "wuffs_aux::DecodeImage with default quirks and limits; non-premultiplied RGBA at source depth. Built against release/c/wuffs-unsupported-snapshot.c (the code generated from HEAD); the release column vendors wuffs-v0.4.c. The snapshot's version string is the placeholder 0.0.0+0.00000000."
+notes = "wuffs_aux::DecodeImage with default quirks and limits; non-premultiplied RGBA at source depth; its default first-frame helper may leave trailing chunks unread. Built against release/c/wuffs-unsupported-snapshot.c (the code generated from HEAD); the release column vendors wuffs-v0.4.c. The snapshot's version string is the placeholder 0.0.0+0.00000000."
 cmd = ["{head}/difftest/wuffs-head/shim", "{input}", "{output}"]
 version = ["{head}/difftest/wuffs-head/shim", "--version"]
 build = ["sh", "-ec", '''
@@ -440,6 +475,7 @@ c++ -O2 -Wall -Wextra -Wno-unused-parameter -I{head}/clibs/wuffs/release/c -o $d
 memcheck = true
 
 [zune-png-head]
+diagnostics = "errors only; upstream warning macros are no-ops"
 project = "zune-png"
 variant = "HEAD"
 revision = "33007f6 2026-10-22"
@@ -459,11 +495,12 @@ cargo build --release --quiet --manifest-path $d/Cargo.toml
 memcheck = true
 
 [imagesharp-head]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "imagesharp"
 variant = "HEAD"
 revision = "d1367d4 2026-04-07"
 lineage = "imagesharp"
-notes = "SixLabors.ImageSharp on .NET; Rgba32 or Rgba64 chosen from the IHDR depth. Branch release/3.1.x (v3.1.12-13-gd1367d4) built from source through a ProjectReference, net6.0 library on the .NET 9 runtime; the SharedInfrastructure submodule is cloned at its pinned commit 353b9af. --version says 0.0.1 because the archived tree has no git history for MinVer. main (4.x) is not built: it needs the .NET 10 SDK and a Six Labors license key at build time."
+notes = "SixLabors.ImageSharp on .NET; Image.Load into the native pixel type, rows converted to RGBA at source precision. Load<Rgba32> is not used: it returns wrong alpha on tiny interlaced sub-byte gray files. Branch release/3.1.x (v3.1.12-13-gd1367d4) built from source through a ProjectReference, net6.0 library on the .NET 9 runtime; the SharedInfrastructure submodule is cloned at its pinned commit 353b9af. --version says 0.0.1 because the archived tree has no git history for MinVer. main (4.x) is not built: it needs the .NET 10 SDK and a Six Labors license key at build time."
 cmd = ["{head}/difftest/imagesharp-head/publish/ImageSharpShim", "{input}", "{output}"]
 version = ["{head}/difftest/imagesharp-head/publish/ImageSharpShim", "--version"]
 build = ["sh", "-ec", '''
@@ -485,12 +522,13 @@ timeout_s = 60
 memcheck = false
 
 [fast-png-head]
+diagnostics = "errors only; no recoverable-warning channel"
 creates = "{head}/difftest/fast-png-head/fast-png.mjs"
 project = "fast-png"
 variant = "HEAD"
 revision = "31b93cf 2026-04-12"
 lineage = "fast-png"
-notes = "image-js fast-png (JavaScript). fast-png returns grayscale/RGB tRNS to the caller instead of applying it; the shim applies it as a conforming caller would (masked to the bit depth), so tRNS results for those color types measure the shim's use of the interface. HEAD reports 8.0.0 like the release; lib/ is compiled from the clone's src/ with its own tsc, dependencies (fflate, iobuffer) from the clone's node_modules."
+notes = "image-js fast-png (JavaScript). decode() returns a gray/RGB tRNS key as data and applies nothing, and its documentation says nothing about it; the shim applies nothing either, so those files show as wrong alpha. Palette images go through its exported convertIndexedToRgb. The result carries no color type, so a one-channel image with a palette is read as indexed, the way fast-png's own converter reads it. HEAD reports 8.0.0 like the release; lib/ is compiled from the clone's src/ with its own tsc, dependencies (fflate, iobuffer) from the clone's node_modules."
 cmd = ["node", "{head}/difftest/fast-png-head/fast-png.mjs", "{input}", "{output}"]
 version = ["node", "{head}/difftest/fast-png-head/fast-png.mjs", "--version"]
 build = ["sh", "-ec", '''
@@ -498,7 +536,7 @@ d={head}/difftest/fast-png-head
 s={head}/scripting/fast-png
 rm -rf $d
 mkdir -p $d/node_modules/fast-png/node_modules
-cp impls/node/fast-png.mjs $d/
+cp impls/node/fast-png.mjs impls/node/pam.mjs $d/
 cp $s/package.json $d/node_modules/fast-png/
 $s/node_modules/.bin/tsc --project $s/tsconfig.build.json --outDir $d/node_modules/fast-png/lib
 ln -s ../../../../../scripting/fast-png/node_modules/fflate $d/node_modules/fast-png/node_modules/fflate
@@ -507,6 +545,7 @@ ln -s ../../../../../scripting/fast-png/node_modules/iobuffer $d/node_modules/fa
 memcheck = false
 
 [pngjs-head]
+diagnostics = "errors only; no recoverable-warning channel"
 creates = "{head}/difftest/pngjs-head/pngjs.mjs"
 project = "pngjs"
 variant = "HEAD"
@@ -519,12 +558,13 @@ build = ["sh", "-ec", '''
 d={head}/difftest/pngjs-head
 rm -rf $d
 mkdir -p $d/node_modules
-cp impls/node/pngjs.mjs $d/
+cp impls/node/pngjs.mjs impls/node/pam.mjs $d/
 ln -s ../../../scripting/pngjs $d/node_modules/pngjs
 ''']
 memcheck = false
 
 [upng-head]
+diagnostics = "errors only; no recoverable-warning channel"
 creates = "{head}/difftest/upng-head/upng.mjs"
 project = "upng"
 variant = "HEAD"
@@ -537,7 +577,7 @@ build = ["sh", "-ec", '''
 d={head}/difftest/upng-head
 rm -rf $d
 mkdir -p $d/node_modules/upng-js
-cp impls/node/upng.mjs $d/
+cp impls/node/upng.mjs impls/node/pam.mjs $d/
 sed 's#"main": "UPNG"#"main": "index.cjs"#' {head}/scripting/UPNG.js/package.json > $d/node_modules/upng-js/package.json
 grep -q index.cjs $d/node_modules/upng-js/package.json
 cat > $d/node_modules/upng-js/index.cjs <<'EOF'
@@ -557,11 +597,12 @@ max_depth = 8
 memcheck = false
 
 [pillow-head]
+diagnostics = "Python warnings and exceptions"
 project = "pillow"
 variant = "HEAD"
 revision = "d4b99a3 2026-10-23"
 lineage = "pillow"
-notes = "Pillow's own PNG plugin (zlib, not libpng); convert('RGBA') for modes up to 8 bits, 16-bit gray kept; Pillow reads 16-bit RGB(A) as 8-bit. main (13.1.0.dev0) built from a git archive of the clone into its own uv venv (CPython 3.13)."
+notes = "Pillow's own PNG plugin (zlib, not libpng); banded convert('RGBA') up to 8 bits; gray16 written as 16-bit without its tRNS key, which Pillow's convert() drops and the shim does not apply; Pillow reads 16-bit RGB(A) as 8-bit. main (13.1.0.dev0) built from a git archive of the clone into its own uv venv (CPython 3.13)."
 cmd = ["{head}/difftest/pillow-head/venv/bin/python", "impls/pillow_shim.py", "{input}", "{output}"]
 version = ["{head}/difftest/pillow-head/venv/bin/python", "impls/pillow_shim.py", "--version"]
 build = ["sh", "-ec", '''
@@ -576,11 +617,12 @@ max_depth = 8
 memcheck = false
 
 [pypng-head]
+diagnostics = "Python warnings and exceptions"
 project = "pypng"
 variant = "HEAD"
 revision = "f6899c4 2025-10-29"
 lineage = "pypng"
-notes = "pure-Python pypng Reader.asRGBA(); honors sBIT by rescaling. GitLab main (0.20250521.0; GitHub and PyPI carry the 2022 code) loaded through PYTHONPATH from the clone's code/ directory."
+notes = "pure-Python pypng Reader.asRGBA(); this revision preserves source precision despite sBIT. GitLab main (0.20250521.0; GitHub and PyPI carry the 2022 code) loaded through PYTHONPATH from the clone's code/ directory."
 cmd = ["{head}/difftest/pypng-head/venv/bin/python", "impls/pypng_shim.py", "{input}", "{output}"]
 version = ["{head}/difftest/pypng-head/venv/bin/python", "impls/pypng_shim.py", "--version"]
 build = ["sh", "-ec", '''
@@ -593,6 +635,7 @@ timeout_s = 120
 memcheck = false
 
 [opencv-head]
+diagnostics = "native stderr and errors"
 project = "opencv"
 variant = "HEAD"
 revision = "ce58bb1 2026-10-22"
@@ -618,6 +661,7 @@ mem_mb = 8192
 memcheck = false
 
 [chunky_png-head]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "chunky_png"
 variant = "HEAD"
 revision = "7a1faf6 2021-06-06"
@@ -631,17 +675,19 @@ timeout_s = 120
 memcheck = false
 
 [pngtopam-head]
+diagnostics = "stderr warnings and errors"
 project = "pngtopam"
 variant = "HEAD"
 revision = "svn advanced r5409, last changed r5388 2026-10-08"
 lineage = "libpng"
-notes = "netpbm pngtopam -alphapam: libpng with netpbm's policies. Netpbm 11.16.1 (advanced branch; pngtopam.c identical to trunk; release column: Arch super_stable 10.86) over the system libpng. Built in-tree in {head}/ctools/netpbm; LD_LIBRARY_PATH points it at that build's libnetpbm, without which it silently loads the system's libnetpbm.so.11."
+notes = "netpbm pngtopam -alphapam: libpng with netpbm's policies, including uniform sBIT precision reduction. Netpbm 11.16.1 (advanced branch; pngtopam.c identical to trunk; release column: Arch super_stable 10.86) over the system libpng. Built in-tree in {head}/ctools/netpbm; LD_LIBRARY_PATH points it at that build's libnetpbm, without which it silently loads the system's libnetpbm.so.11."
 cmd = ["sh", "-c", "exec {head}/ctools/netpbm/converter/other/pngtopam -alphapam \"$1\" > \"$2\"", "pngtopam", "{input}", "{output}"]
 version = ["{head}/ctools/netpbm/converter/other/pngtopam", "--version"]
 env = { LD_LIBRARY_PATH = "{head}/ctools/netpbm/lib" }
 memcheck = true
 
 [go-png-head]
+diagnostics = "errors only; no recoverable-warning channel"
 project = "go-png"
 variant = "HEAD"
 revision = "5391dd5 2026-10-22"

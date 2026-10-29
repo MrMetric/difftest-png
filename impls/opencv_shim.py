@@ -1,19 +1,13 @@
-"""OpenCV shim. Policy: cv2.imread with IMREAD_UNCHANGED (keeps 16-bit and
-alpha, expands palette); BGR(A) reordered to RGB(A).
-"""
+"""OpenCV IMREAD_UNCHANGED; native arrays serialized in RGB order by row."""
 import sys
+from pamwriter import api, failure, header, run
 
 try:
 	import cv2
 	import numpy as np
-except ImportError as e:  # 127: the decoder library is not installed (see impls/CONTRACT.md)
+except ImportError as e:
 	print("ERR decoder library not installed:", e)
 	sys.exit(127)
-
-
-def fail(msg):
-	print("ERR", msg)
-	sys.exit(1)
 
 
 def main():
@@ -21,34 +15,31 @@ def main():
 		png_line = next((l.strip() for l in cv2.getBuildInformation().splitlines() if l.strip().startswith("PNG:")), "")
 		print(f"OpenCV {cv2.__version__} ({png_line})")
 		return
-	src, dst = sys.argv[1], sys.argv[2]
-	img = cv2.imread(src, cv2.IMREAD_UNCHANGED)
-	if img is None:
-		fail("imread returned None")
+	src, dst = sys.argv[1:]
+	try:
+		img = cv2.imread(src, cv2.IMREAD_UNCHANGED)
+		if img is None:
+			raise ValueError("imread returned None")
+	except Exception as e:
+		failure(e, decoder=True)
 	print(f"INFO shape={img.shape} dtype={img.dtype}")
-	if img.ndim == 2:
-		a, channels = img, 1
-	elif img.shape[2] == 3:
-		a, channels = img[:, :, ::-1], 3
-	elif img.shape[2] == 4:
-		a, channels = img[:, :, [2, 1, 0, 3]], 4
-	elif img.shape[2] == 2:
-		a, channels = img, 2
-	else:
-		fail(f"unhandled shape {img.shape}")
-	if a.dtype == np.uint8:
-		maxval, body = 255, np.ascontiguousarray(a).tobytes()
-	elif a.dtype == np.uint16:
-		maxval, body = 65535, a.astype(">u2").tobytes()
-	else:
-		fail(f"unhandled dtype {a.dtype}")
-	h, w = a.shape[:2]
-	tt = ["GRAYSCALE", "GRAYSCALE_ALPHA", "RGB", "RGB_ALPHA"][channels - 1]
-	with open(dst, "wb") as f:
-		f.write(f"P7\nWIDTH {w}\nHEIGHT {h}\nDEPTH {channels}\nMAXVAL {maxval}\nTUPLTYPE {tt}\nENDHDR\n".encode())
-		f.write(body)
+	api(img.ndim in (2, 3), f"unhandled array shape {img.shape}")
+	channels = 1 if img.ndim == 2 else img.shape[2]
+	api(1 <= channels <= 4 and img.dtype in (np.uint8, np.uint16), f"unhandled array {img.shape} {img.dtype}")
+	maxval = 65535 if img.dtype == np.uint16 else 255
+	h, w = img.shape[:2]
+	with open(dst, "wb") as out:
+		header(out, w, h, channels, maxval)
+		for row in img:
+			if channels == 3:
+				row = row[:, ::-1]
+			elif channels == 4:
+				row = row[:, [2, 1, 0, 3]]
+			body = row.astype(">u2").tobytes() if maxval > 255 else row.tobytes()
+			api(len(body) == w * channels * (2 if maxval > 255 else 1), f"row of {len(body)} bytes for {w} pixels")
+			out.write(body)
 	print(f"OK {w} {h} {channels} {16 if maxval > 255 else 8}")
 
 
 if __name__ == "__main__":
-	main()
+	run(main)

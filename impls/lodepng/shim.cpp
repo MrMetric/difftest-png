@@ -47,13 +47,13 @@ int main(int argc, char **argv)
 	}
 	FILE *o = fopen(argv[2], "wb");
 	if (!o) {
-		printf("ERR cannot open output\n");
-		return 1;
+		printf("SHIM cannot open output\n");
+		return 70;
 	}
 	fprintf(o, "P7\nWIDTH %u\nHEIGHT %u\nDEPTH 4\nMAXVAL %d\nTUPLTYPE RGB_ALPHA\nENDHDR\n", w, h, outdepth == 16 ? 65535 : 255);
 	if (fwrite(out.data(), 1, out.size(), o) != out.size() || fclose(o) != 0) {
-		printf("ERR short write\n");
-		return 1;
+		printf("SHIM short write\n");
+		return 70;
 	}
 	printf("OK %u %u 4 %u\n", w, h, outdepth);
 	return 0;

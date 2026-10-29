@@ -5,8 +5,8 @@
  *     gray<8 -> 8-bit, all spec-exact). No gamma, no background, no 16->8.
  *   - CRC handling, unknown-chunk handling, user limits: libpng defaults.
  *   - Rows are read one at a time with png_read_row and written out as they
- *     arrive, so the shim holds one row and never the image: it has no memory
- *     need libpng itself lacks. Interlace handling stays off; the shim reads
+ *     arrive, with a decode row and an Adam7 merge row, never another image.
+ *     Interlace handling stays off; the shim reads
  *     each pass's rows and places their pixels itself, the way libpng-manual.txt
  *     describes with the PNG_PASS_* macros.
  *   - png_read_end is called. An error libpng raises at any point, before or
@@ -68,6 +68,12 @@ static void report_chunks(png_structp png, png_infop info)
 	printf(" text=%d\n", ntext);
 }
 
+static int shim_fail(const char *msg)
+{
+	printf("SHIM %s\n", msg);
+	return 70;
+}
+
 int main(int argc, char **argv)
 {
 	if (argc == 2 && strcmp(argv[1], "--version") == 0) {
@@ -80,7 +86,7 @@ int main(int argc, char **argv)
 	}
 	FILE *in = fopen(argv[1], "rb");
 	if (!in)
-		return fail("cannot open input");
+		return shim_fail("cannot open input");
 	png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, err_fn, warn_fn);
 	png_infop info = png ? png_create_info_struct(png) : NULL;
 	if (!png || !info)
@@ -101,15 +107,15 @@ int main(int argc, char **argv)
 	int channels = png_get_channels(png, info), odepth = png_get_bit_depth(png, info);
 	size_t rowbytes = png_get_rowbytes(png, info);
 	if (odepth != 8 && odepth != 16) {
-		printf("ERR unexpected output bit depth %d\n", odepth);
-		return 1;
+		printf("API unexpected output bit depth %d\n", odepth);
+		return 71;
 	}
 	struct pam_out out;
 	if (pam_open(&out, argv[2], w, h, channels, odepth == 16 ? 65535 : 255))
-		return fail("cannot open output");
+		return shim_fail("cannot open output");
 	png_bytep row = malloc(rowbytes), scratch = malloc(rowbytes);
 	if (!row || !scratch)
-		return fail("out of memory for one row");
+		return shim_fail("out of memory for one row");
 	if (interlace == PNG_INTERLACE_ADAM7) {
 		for (int pass = 0; pass < PNG_INTERLACE_ADAM7_PASSES; pass++) {
 			png_uint_32 cols = PNG_PASS_COLS(w, pass), rows = PNG_PASS_ROWS(h, pass);
@@ -118,19 +124,23 @@ int main(int argc, char **argv)
 			for (png_uint_32 y = 0; y < rows; y++) {
 				png_read_row(png, row, NULL);
 				if (pam_pass_row(&out, pass, y, row, cols, scratch))
-					return fail("cannot write output");
+					return shim_fail("cannot write output");
 			}
 		}
 	} else {
 		for (png_uint_32 y = 0; y < h; y++) {
 			png_read_row(png, row, NULL);
 			if (pam_row(&out, y, row))
-				return fail("cannot write output");
+				return shim_fail("cannot write output");
 		}
 	}
 	png_read_end(png, info);
 	if (pam_close(&out))
-		return fail("output incomplete");
+		return shim_fail("output incomplete");
+	free(row);
+	free(scratch);
+	png_destroy_read_struct(&png, &info, NULL);
+	fclose(in);
 	printf("OK %u %u %d %d\n", (unsigned)w, (unsigned)h, channels, odepth);
 	return 0;
 }

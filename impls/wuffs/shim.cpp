@@ -71,8 +71,8 @@ int main(int argc, char **argv)
 	wuffs_base__table_u8 t = pb.plane(0);
 	FILE *o = fopen(argv[2], "wb");
 	if (!o) {
-		printf("ERR cannot open output\n");
-		return 1;
+		printf("SHIM cannot open output\n");
+		return 70;
 	}
 	fprintf(o, "P7\nWIDTH %u\nHEIGHT %u\nDEPTH 4\nMAXVAL %d\nTUPLTYPE RGB_ALPHA\nENDHDR\n", w, h, wide ? 65535 : 255);
 	std::string row;
@@ -91,13 +91,13 @@ int main(int argc, char **argv)
 			row.assign((const char *)src, (size_t)w * 4);
 		}
 		if (fwrite(row.data(), 1, row.size(), o) != row.size()) {
-			printf("ERR short write\n");
-			return 1;
+			printf("SHIM short write\n");
+			return 70;
 		}
 	}
 	if (fclose(o) != 0) {
-		printf("ERR short write\n");
-		return 1;
+		printf("SHIM short write\n");
+		return 70;
 	}
 	printf("OK %u %u 4 %d\n", w, h, wide ? 16 : 8);
 	return 0;

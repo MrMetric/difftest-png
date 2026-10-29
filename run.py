@@ -48,7 +48,8 @@ ROOT = Path(__file__).resolve().parent
 LENSES = tuple(pnglens.LENSES)
 # The reference decoder read through each lens (pnglens.py --lens): it passes every test under its own lens.
 REFERENCES = {lens: f"reference-{lens}" for lens in LENSES}
-FATAL = ("crash", "timeout", "oom", "memory", "shim")  # always a must-violation
+FATAL = ("crash", "timeout", "oom", "memory", "api")  # always a must-violation
+# `shim`, the adapter's own failure, is not scored: its severity is "shim" and the run lists it as a problem.
 # Not a performance limit: no PNG decoder should need this long, and slow decodes that do finish keep their
 # real outcome instead of becoming a timeout when the machine is busy.
 TIMEOUT_S = 60.0
@@ -63,6 +64,7 @@ class Impl:
 	lineage: str
 	cmd: list[str]
 	notes: str = ""
+	diagnostics: str = ""
 	pixels: bool = True
 	version_cmd: list[str] | None = None
 	revision: str | None = None
@@ -102,15 +104,16 @@ def load_impls(head: Path) -> list[Impl]:
 		return s
 	with open(ROOT / "impls.toml", "rb") as f:
 		raw = tomllib.load(f)
-	known = {"project", "variant", "lineage", "cmd", "notes", "pixels", "version", "revision", "build", "creates", "mem_mb",
+	known = {"project", "variant", "lineage", "cmd", "notes", "diagnostics", "pixels", "version", "revision", "build", "creates", "mem_mb",
 		"timeout_s", "max_depth", "env", "memcheck"}
 	out = []
 	for name, d in raw.items():
 		assert d.keys() <= known, f"{name}: unknown keys {sorted(d.keys() - known)}"
+		assert d.get("diagnostics"), f"{name}: record the library's diagnostic channel or its absence"
 		assert d.get("pixels", True) is False or "{output}" in d["cmd"] or any("{output}" in a for a in d["cmd"]), name
 		out.append(Impl(
 			name=name, project=d["project"], variant=d["variant"], lineage=d["lineage"],
-			cmd=[expand(a) for a in d["cmd"]], notes=d.get("notes", ""), pixels=d.get("pixels", True),
+			cmd=[expand(a) for a in d["cmd"]], notes=d.get("notes", ""), diagnostics=d["diagnostics"], pixels=d.get("pixels", True),
 			version_cmd=[expand(a) for a in d["version"]] if "version" in d else None,
 			revision=d.get("revision"), build=[expand(a) for a in d["build"]] if "build" in d else None,
 			creates=expand(d["creates"]) if "creates" in d else None,
@@ -140,6 +143,8 @@ def load_manifest(path: Path) -> list[Test]:
 
 
 def unavailable(impl: Impl) -> str | None:
+	if impl.creates and not Path(impl.creates).exists():
+		return f"{impl.creates} not built"
 	prog = impl.cmd[0]
 	if "/" in prog:
 		if not Path(prog).exists():
@@ -255,6 +260,8 @@ def score(impl: Impl, verdict: str, lens: pnglens.Verdict, tag: dict | str | Non
 	only because an extension's definition takes precedence over a convention it collides with."""
 	if verdict in FATAL:
 		return verdict, "must", False
+	if verdict == "shim":
+		return "shim", "shim", False
 	assert verdict in ("accept", "reject"), verdict
 	if not impl.pixels:  # a validator is judged on whether the datastream conforms
 		if verdict == "accept":
@@ -280,7 +287,7 @@ def judge(impl: Impl, raw: dict, reading: expect.Reading, labelled: tuple[dict |
 	res = {"detail": raw["detail"]}
 	if raw.get("memory"):
 		res["memory"] = raw["memory"]  # in addition to the outcome of the normal run, which it does not hide
-	if raw.get("memcheck_timeout") and v not in FATAL:
+	if raw.get("memcheck_timeout") and v not in FATAL and v != "shim":  # a wrapper failure stays one, to be fixed
 		v = "timeout"
 		res["detail"] = f"killed after {execute.MEMCHECK_TIMEOUT_S:g} s under valgrind"
 	tag = None
@@ -346,7 +353,7 @@ def summarize(results: dict[str, dict], conforms: dict[str, dict[str, bool]], so
 	reductions seen; and per choice topic, how many tests it resolved with each option (the option every
 	interpretation it matched shares). `conforms`: test id -> lens -> whether the file conforms; `source`: test id ->
 	the source of its transparency."""
-	s: dict = {lens: {"must": 0, "should": 0, "pass": 0, "silent": 0} for lens in LENSES}
+	s: dict = {lens: {"must": 0, "should": 0, "pass": 0, "shim": 0, "silent": 0} for lens in LENSES}
 	for tid, r in results.items():
 		for lens in LENSES:
 			s[lens][r["severity"][lens]] += 1
@@ -595,6 +602,9 @@ def _judge_and_report(args, tests: list[Test], avail: list[Impl], raw: dict, mem
 			if ref["severity"][lens] != "pass" or (image[0] if image else None) != want:
 				problems.append(f"{t.id}: {name} ({outcome}, {ref['severity'][lens]} under lens {lens}) is not the reference "
 					f"decoder read through lens {lens} ({'its preferred interpretation' if want else 'a rejection'})")
+		for name, r in judged.items():
+			if r["outcome"] == "shim":
+				problems.append(f"{t.id}: {name} wrapper failure, not scored: {r['detail']}")
 		assert all(c in clauses for c in t.about + [t.clause] if c), (t.id, t.about, t.clause)
 		report_tests.append({
 			"id": t.id, "file": t.file, "clause": t.clause, "statement": clauses[t.clause]["statement"] if t.clause else "",
@@ -616,7 +626,7 @@ def _judge_and_report(args, tests: list[Test], avail: list[Impl], raw: dict, mem
 		"problems": problems,
 		"implementations": [{
 			"name": i.name, "project": i.project, "variant": i.variant, "lineage": i.lineage,
-			"version": version_of(i), "revision": i.revision, "notes": i.notes, "pixels": i.pixels,
+			"version": version_of(i), "revision": i.revision, "notes": i.notes, "diagnostics": i.diagnostics, "pixels": i.pixels,
 			"max_depth": i.max_depth, "memcheck": memcheck and i.memcheck,
 			"summary": summarize(results[i.name], {t["id"]: t["conforms"] for t in report_tests}, {t.id: transparency_source(t.reaches) for t in tests}),
 		} for i in avail],

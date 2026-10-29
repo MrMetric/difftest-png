@@ -1,13 +1,11 @@
-// ImageSharp shim. Policy: Image.Identify for the IHDR bit depth, then
-// Image.Load<Rgba32> (files up to 8 bits) or Image.Load<Rgba64> (16-bit),
-// so no sample is scaled by the shim. If Identify itself throws (it does on
-// APNG with fdAT chunks in 3.1.x), that is reported as WARN and the image is
-// loaded as Rgba64, which ImageSharp upscales exactly (x257) for 8-bit data.
-// Decoder options are ImageSharp's defaults.
+// ImageSharp shim. Policy: Image.Load into the library's native pixel type, rows
+// converted to Rgba64 by the library and written at the IHDR precision. Decoder
+// options are ImageSharp's defaults, so an APNG's frames are all decoded.
 using System;
 using System.IO;
 using System.Text;
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Advanced;
 using SixLabors.ImageSharp.Formats.Png;
 using SixLabors.ImageSharp.PixelFormats;
 
@@ -16,77 +14,74 @@ if (args.Length == 1 && args[0] == "--version")
 	Console.WriteLine($"ImageSharp {typeof(Image).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false).OfType<System.Reflection.AssemblyInformationalVersionAttribute>().First().InformationalVersion.Split('+')[0]} (.NET {Environment.Version})");
 	return 0;
 }
-if (args.Length != 2)
+if (args.Length != 2) { Console.WriteLine("SHIM usage: ImageSharpShim in.png out.pam"); return 70; }
+Image img;
+try { img = Image.Load(args[0]); }
+catch (Exception e) { Console.WriteLine("ERR " + Describe(e)); return 1; }
+using (img)
 {
-	Console.Error.WriteLine("usage: ImageSharpShim in.png out.pam");
-	return 2;
-}
-try
-{
-	bool is16 = true;
 	try
 	{
-		ImageInfo info = Image.Identify(args[0]);
-		PngMetadata meta = info.Metadata.GetPngMetadata();
-		is16 = meta.BitDepth == PngBitDepth.Bit16;
-		Console.WriteLine($"INFO ihdr width={info.Width} height={info.Height} bit_depth={meta.BitDepth} color_type={meta.ColorType} interlace={meta.InterlaceMethod} bpp={info.PixelType.BitsPerPixel}");
+		// ProcessPixelRows visits the root frame, the default image.
+		Console.WriteLine($"INFO type={img.GetType().Name} frames={img.Frames.Count} bits={img.Metadata.GetPngMetadata().BitDepth}");
+		img.AcceptVisitor(new PamWriter(args[1]));
 	}
-	catch (Exception e)
-	{
-		Console.WriteLine($"WARN Identify failed: {e.GetType().Name}: {e.Message}; loading as Rgba64");
-	}
-	using var fs = new FileStream(args[1], FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20);
-	int w, h;
-	if (is16)
-	{
-		using Image<Rgba64> img = Image.Load<Rgba64>(args[0]);
-		w = img.Width; h = img.Height;
-		fs.Write(Encoding.ASCII.GetBytes($"P7\nWIDTH {w}\nHEIGHT {h}\nDEPTH 4\nMAXVAL 65535\nTUPLTYPE RGB_ALPHA\nENDHDR\n"));
-		byte[] buf = new byte[w * 8];
-		img.ProcessPixelRows(acc =>
-		{
-			for (int y = 0; y < acc.Height; y++)
-			{
-				Span<Rgba64> row = acc.GetRowSpan(y);
-				for (int x = 0; x < row.Length; x++)
-				{
-					Rgba64 p = row[x];
-					buf[8 * x] = (byte)(p.R >> 8); buf[8 * x + 1] = (byte)p.R;
-					buf[8 * x + 2] = (byte)(p.G >> 8); buf[8 * x + 3] = (byte)p.G;
-					buf[8 * x + 4] = (byte)(p.B >> 8); buf[8 * x + 5] = (byte)p.B;
-					buf[8 * x + 6] = (byte)(p.A >> 8); buf[8 * x + 7] = (byte)p.A;
-				}
-				fs.Write(buf, 0, buf.Length);
-			}
-		});
-		Console.WriteLine($"OK {w} {h} 4 16");
-	}
-	else
-	{
-		using Image<Rgba32> img = Image.Load<Rgba32>(args[0]);
-		w = img.Width; h = img.Height;
-		fs.Write(Encoding.ASCII.GetBytes($"P7\nWIDTH {w}\nHEIGHT {h}\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n"));
-		byte[] buf = new byte[w * 4];
-		img.ProcessPixelRows(acc =>
-		{
-			for (int y = 0; y < acc.Height; y++)
-			{
-				Span<Rgba32> row = acc.GetRowSpan(y);
-				for (int x = 0; x < row.Length; x++)
-				{
-					Rgba32 p = row[x];
-					buf[4 * x] = p.R; buf[4 * x + 1] = p.G; buf[4 * x + 2] = p.B; buf[4 * x + 3] = p.A;
-				}
-				fs.Write(buf, 0, buf.Length);
-			}
-		});
-		Console.WriteLine($"OK {w} {h} 4 8");
-	}
-	return 0;
+	catch (ApiException e) { Console.WriteLine("API " + e.Message); return 71; }
+	catch (Exception e) { Console.WriteLine("SHIM " + Describe(e)); return 70; }
 }
-catch (Exception e)
+return 0;
+
+static string Describe(Exception error)
 {
-	Console.WriteLine($"ERR {e.GetType().Name}: {e.Message}");
-	foreach (string line in (e.StackTrace ?? "").Split('\n')) { if (line.Contains("SixLabors")) Console.WriteLine("INFO at " + line.Trim()); }
-	return 1;
+	var causes = new List<string>();
+	for (Exception? e = error; e != null; e = e.InnerException)
+		causes.Add($"{e.GetType().Name}: {e.Message}");
+	return string.Join(" <- ", causes).Replace('\n', ' ').Replace('\r', ' ');
+}
+
+// The library returned without error but not an image the shim can write: its result.
+class ApiException(string message) : Exception(message) { }
+
+class PamWriter(string path) : IImageVisitor
+{
+	public void Visit<TPixel>(Image<TPixel> img) where TPixel : unmanaged, IPixel<TPixel>
+	{
+		bool wide = img.Metadata.GetPngMetadata().BitDepth == PngBitDepth.Bit16;
+		int w = img.Width, h = img.Height, maxval = wide ? 65535 : 255;
+		if (w <= 0 || h <= 0) throw new ApiException($"invalid image dimensions {w}x{h}");
+		using var output = File.Create(path);
+		output.Write(Encoding.ASCII.GetBytes($"P7\nWIDTH {w}\nHEIGHT {h}\nDEPTH 4\nMAXVAL {maxval}\nTUPLTYPE RGB_ALPHA\nENDHDR\n"));
+		var rgba = new Rgba64[w];
+		var bytes = new byte[checked(w * (wide ? 8 : 4))];
+		img.ProcessPixelRows(rows =>
+		{
+			for (int y = 0; y < rows.Height; y++)
+			{
+				PixelOperations<TPixel>.Instance.ToRgba64(img.Configuration, rows.GetRowSpan(y), rgba);
+				for (int x = 0; x < w; x++)
+				{
+					var p = rgba[x];
+					if (!wide)
+					{
+						if (p.R % 257 != 0 || p.G % 257 != 0 || p.B % 257 != 0 || p.A % 257 != 0)
+							throw new ApiException("8-bit PNG yielded non-8-bit samples");
+						int i = x * 4;
+						bytes[i] = (byte)(p.R / 257); bytes[i + 1] = (byte)(p.G / 257);
+						bytes[i + 2] = (byte)(p.B / 257); bytes[i + 3] = (byte)(p.A / 257);
+					}
+					else
+					{
+						int i = x * 8;
+						bytes[i] = (byte)(p.R >> 8); bytes[i + 1] = (byte)p.R;
+						bytes[i + 2] = (byte)(p.G >> 8); bytes[i + 3] = (byte)p.G;
+						bytes[i + 4] = (byte)(p.B >> 8); bytes[i + 5] = (byte)p.B;
+						bytes[i + 6] = (byte)(p.A >> 8); bytes[i + 7] = (byte)p.A;
+					}
+				}
+				output.Write(bytes);
+			}
+		});
+		output.Flush();
+		Console.WriteLine($"OK {w} {h} 4 {(wide ? 16 : 8)}");
+	}
 }

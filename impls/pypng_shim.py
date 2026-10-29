@@ -1,49 +1,73 @@
-"""pypng shim. Policy: Reader.asRGBA(), which applies palette and tRNS and
-keeps 16-bit samples; bit depths below 8 come back scaled to 8 by pypng.
+"""PyPNG Reader.asRGBA(), consuming its lazy rows through completion.
+Its returned bit depth (including release sBIT reduction) is carried by PAM.
 """
 import array
 import sys
+from pamwriter import ApiError, api, failure, header, run
 
 try:
 	import png
-except ImportError as e:  # 127: the decoder library is not installed (see impls/CONTRACT.md)
+except ImportError as e:
 	print("ERR decoder library not installed:", e)
 	sys.exit(127)
 
 
-def fail(msg):
-	print("ERR", msg)
-	sys.exit(1)
+def samples(row, bd):
+	"""One row's samples as big-endian PAM bytes; a non-integer or a value past the depth is an api failure."""
+	try:
+		a = array.array("H" if bd > 8 else "B", row)
+	except (TypeError, OverflowError, ValueError) as e:
+		raise ApiError(f"row samples: {type(e).__name__}: {e}") from None
+	if bd not in (8, 16):  # the array type bounds those two; sBIT reduction yields depths between
+		api(max(a, default=0) <= (1 << bd) - 1, f"sample {max(a)} past bit depth {bd}")
+	if bd > 8 and sys.byteorder == "little":
+		a.byteswap()
+	return a.tobytes()
 
 
 def main():
 	if sys.argv[1:] == ["--version"]:
 		print("pypng", png.__version__)
 		return
-	src, dst = sys.argv[1], sys.argv[2]
-	try:
-		r = png.Reader(filename=src)
-		w, h, rows, info = r.asRGBA()
+	src, dst = sys.argv[1:]
+	with open(src, "rb") as source:
+		try:
+			w, h, rows, info = png.Reader(file=source).asRGBA()
+			rows = iter(rows)
+		except Exception as e:
+			failure(e, decoder=True)
 		bd = info["bitdepth"]
-		maxval = (1 << bd) - 1
-		chunks = []
-		for row in rows:
-			a = array.array("H" if bd > 8 else "B", row) if not isinstance(row, array.array) else row
-			if bd > 8 and sys.byteorder == "little":
-				a = array.array("H", a)
-				a.byteswap()
-			chunks.append(a.tobytes())
-	except Exception as e:  # noqa: BLE001
-		fail(f"{type(e).__name__}: {e}")
-	print(f"INFO width={w} height={h} bitdepth={bd} info={','.join(f'{k}={v}' for k, v in sorted(info.items()) if k in ('alpha','greyscale','interlace','palette','planes','gamma'))}")
-	if len(chunks) != h:
-		# pypng stops at the end of the image data without complaint: say so instead of writing a short PAM.
-		fail(f"pypng returned {len(chunks)} of {h} rows without raising")
-	with open(dst, "wb") as f:
-		f.write(f"P7\nWIDTH {w}\nHEIGHT {h}\nDEPTH 4\nMAXVAL {maxval}\nTUPLTYPE RGB_ALPHA\nENDHDR\n".encode())
-		f.writelines(chunks)
+		print(f"INFO width={w} height={h} bitdepth={bd} planes={info['planes']}")
+		transport_error = None
+		with open(dst, "wb") as out:
+			try:
+				api(1 <= bd <= 16, f"bit depth {bd}")
+				header(out, w, h, 4, (1 << bd) - 1)
+				y = 0
+				while True:
+					try:
+						row = next(rows)
+					except StopIteration:
+						break
+					except Exception as e:
+						failure(e, decoder=True)
+					api(y < h, f"pypng returned more than {h} rows")
+					api(len(row) == w * 4, f"row {y} holds {len(row)} samples, not {w * 4}")
+					out.write(samples(row, bd))
+					y += 1
+				api(y == h, f"pypng returned {y} of {h} rows without raising")
+			except ApiError as e:
+				transport_error = e
+		if transport_error is not None:
+			# An unusable row/header must not hide a later error from the lazy decoder.
+			try:
+				for _ in rows:
+					pass
+			except Exception as e:
+				failure(e, decoder=True)
+			raise transport_error
 	print(f"OK {w} {h} 4 {16 if bd > 8 else 8}")
 
 
 if __name__ == "__main__":
-	main()
+	run(main)
