@@ -20,19 +20,7 @@ REPO = "https://github.com/MrMetric/difftest-png"
 README = Path(__file__).with_name("README.md")
 # glyph per outcome; color comes from severity
 GLYPH = {"pixels": "✓", "reject": "R", "wrong": "≠", "accept": "A", "crash": "☠", "memory": "M",
-	"timeout": "⧗", "oom": "∞", "api": "!", "shim": "S"}
-OUTCOME_TEXT = {
-	"pixels": "decoded to the pixels of one of the reference's interpretations; a validator: accepted a conforming file",
-	"reject": "rejected the file",
-	"wrong": "decoded to pixels no interpretation has",
-	"accept": "decoded a file the lens says to reject, or one with no reference pixels; a validator: accepted a file that does not conform",
-	"crash": "crashed",
-	"memory": "memory error under valgrind memcheck",
-	"timeout": "timed out",
-	"oom": "ran out of memory",
-	"api": "returned without error, but not an image: wrong size, missing rows or non-numeric samples",
-	"shim": "the wrapper itself failed; not scored, listed under problems",
-}
+	"timeout": "⧗", "oom": "∞", "api": "!", "shim": "-"}
 # an output whose label rates arguable is marked with a letter per topic of its arguable choices
 TOPIC = {"trns": ("t", "one of several tRNS chunks used"), "crc": ("c", "a chunk with a bad CRC used as stored"),
 	"plte": ("p", "one of several PLTE chunks used"), "critical": ("k", "an unknown critical chunk ignored")}
@@ -41,9 +29,27 @@ TOPIC = {"trns": ("t", "one of several tRNS chunks used"), "crc": ("c", "a chunk
 REF = re.compile(r"(?:(?:2nd ed\.|RFC 195[01]|Extensions(?: 1\.5\.0)?|GIF89a) )?§\d+(?:\.\d+)*(?: Table \d+)?")
 SEVERITY_STYLE = {"pass": "color:#7c7", "should": "color:#eb5;background:#332a10", "must": "color:#f66;background:#3a1515",
 	"fatal": "color:#fff;background:#a0206a", "api": "color:#fff;background:#c0181c", "shim": "color:#aaa;background:#333"}
-SEVERITY_TEXT = {"pass": "pass", "should": "should-violation", "must": "must-violation",
-	"fatal": "crash, hang, out of memory or memory error (a must-violation)", "api": "no usable image returned (a must-violation)",
-	"shim": "wrapper failure (not scored)"}
+# What a cell's color counts as; the legend names it beside each cell it can show.
+COUNTS_AS = {"pass": "pass", "should": "should-violation", "must": "must-violation", "fatal": "must-violation",
+	"api": "must-violation", "shim": "not scored"}
+# Every cell a reader can meet: outcome glyph in its severity's color, and what happened. Severity follows from
+# the outcome except for a rejection (pass, should or must by what the lens expected) and an accept (pass for a
+# file with no reference pixels, must for one the lens says to reject). legend() checks the results fit this list.
+LEGEND = [
+	("pixels", "pass", "decoded to the pixels of one of the reference's interpretations; a validator: accepted a conforming file"),
+	("accept", "pass", "decoded a file that has no reference pixels, which the lens allows to be rejected"),
+	("accept", "must", "decoded a file the lens says to reject; a validator: accepted a file that does not conform"),
+	("reject", "pass", "rejected a file the lens allows to be rejected; a validator: rejected a file that does not conform"),
+	("reject", "should", "rejected a file a decoder should recover and display"),
+	("reject", "must", "rejected a valid file; a validator: rejected a conforming file"),
+	("wrong", "must", "decoded to pixels no interpretation has"),
+	("crash", "fatal", "crashed"),
+	("timeout", "fatal", "timed out"),
+	("oom", "fatal", "ran out of memory"),
+	("memory", "fatal", "memory error under valgrind memcheck, whatever the outcome"),
+	("api", "api", "returned without error, but not an image: wrong size, missing rows or non-numeric samples"),
+	("shim", "shim", "the wrapper itself failed; listed under problems"),
+]
 THUMB_PX = 60  # the height of an output's thumbnail
 EDITION = {"2": "2nd edition", "3": "3rd edition"}  # the lens names a reader sees
 CSS = """
@@ -103,6 +109,8 @@ code{font-size:.9em}
 #mx td>i{display:none;font-style:normal}
 #mx td:has(>i){padding:0}
 #mx th.ctl{display:flex;flex-direction:column;justify-content:end;align-items:start;gap:.3rem;padding:.3rem .4rem;text-align:left;font-size:.9rem}
+#mx{position:relative}
+#mx .hl{position:absolute;display:none;pointer-events:none;background:rgba(255,255,255,.09);z-index:2}
 #mx tr.kinds th.ctl{flex-direction:row;align-items:center;flex-wrap:wrap;gap:.3rem 1rem}
 """ + "".join(f".{cls}{{{style}}}" for cls, style in SEVERITY_STYLE.items())
 
@@ -433,11 +441,24 @@ def expansion(test: dict, report: dict, classes: dict[str, str]) -> str:
 	return "<div class=x>" + "".join(out) + "</div>"
 
 
-def legend() -> str:
-	rows = [f"<tr><td>{g}</td><td></td><td>{esc(OUTCOME_TEXT[k])}</td></tr>" for k, g in GLYPH.items()]
-	rows += [f"<tr><td>✓<sup>{m}</sup></td><td></td><td>{esc(t)} (arguable)</td></tr>" for m, t in TOPIC.values()]
-	rows += [f"<tr><td></td><td class={cls}>{cls}</td><td>{esc(text)}</td></tr>" for cls, text in SEVERITY_TEXT.items()]
-	return "<h2>Legend</h2><table class=legend><tr><th>glyph</th><th>color</th><th>meaning</th></tr>" + "".join(rows) + "</table>"
+def legend_class(r: dict, lens: str) -> tuple[str, str]:
+	"""(outcome, severity class) of one result under one lens, as cell() draws it."""
+	o = "memory" if "memory" in r else outcome(r, lens)
+	return o, "fatal" if o in ("crash", "timeout", "oom", "memory") else "api" if o == "api" else r["severity"][lens]
+
+
+def legend(report: dict) -> str:
+	"""Every kind of cell in the matrix, drawn as the matrix draws it, with what it counts as and what happened.
+	A result outside LEGEND is an error: the legend would be incomplete."""
+	seen = {legend_class(r, lens) for cells in report["results"].values() for r in cells.values() for lens in report["lenses"]}
+	assert seen <= {(o, sev) for o, sev, _ in LEGEND}, seen - {(o, sev) for o, sev, _ in LEGEND}
+	rows = []
+	for o, sev, text in LEGEND:
+		rows.append(f"<tr><td class={sev}>{GLYPH[o]}</td><td class={sev}>{COUNTS_AS[sev]}</td><td>{esc(text)}</td></tr>")
+		if o == "pixels":  # the arguable marks, on a check mark or an A
+			rows += [f"<tr><td class=pass>✓<sup>{m}</sup></td><td class=pass>pass</td><td>{esc(t)}: an arguable choice; the letter also marks an A</td></tr>"
+				for m, t in TOPIC.values()]
+	return "<h2>Legend</h2><table class=legend><tr><th>cell</th><th>counts as</th><th>meaning</th></tr>" + "".join(rows) + "</table>"
 
 
 def families(report: dict) -> list[str]:
@@ -622,7 +643,7 @@ def render(report: dict) -> str:
 		out.append("<p class=must>Suite consistency problems in this run:</p><ul>" + "".join(f"<li>{esc(p)}" for p in report["problems"]) + "</ul>")
 
 	out.append(disclaimer())
-	out.append(legend())
+	out.append(legend(report))
 	sort_select = "<label class=js hidden>sort columns <select class=sort><option value=n>by name<option value=v>by violations</select></label>"
 	out.append(f"<p>{sort_select}</p>")
 	out.append(implementations_table(report, groups))
@@ -749,6 +770,20 @@ q.oninput = fam.onchange = filter;
 for (const e of exp) e.onchange = filter;
 sort();
 filter();
+// Hover: a translucent strip over the row and one over the column, placed from the cell under the mouse. They
+// overlap on that cell alone, so it is the brightest; above the sticky header, so the column's name lights up too.
+// Over a test's name only the row lights up, over a column's name only the column; the corner lights nothing.
+const mx = byId("mx"), strips = [0, 1].map(() => mx.appendChild(Object.assign(document.createElement("div"), {className: "hl"})));
+mx.addEventListener("mouseover", e => {
+	const c = e.target.closest("td,th");
+	if (!c || !mx.contains(c)) return;
+	const m = mx.getBoundingClientRect(), r = c.parentElement.getBoundingClientRect(), b = c.getBoundingClientRect();
+	const x = m.left + mx.clientLeft, y = m.top + mx.clientTop;
+	const inHead = c.closest("thead") !== null, isName = c === c.parentElement.firstElementChild;
+	strips[0].style.cssText = inHead ? "" : `display:block;left:0;top:${r.top - y}px;width:${mx.clientWidth}px;height:${r.height}px`;
+	strips[1].style.cssText = isName ? "" : `display:block;top:0;left:${b.left - x}px;height:${mx.clientHeight}px;width:${b.width}px`;
+});
+mx.addEventListener("mouseleave", () => { for (const s of strips) s.style.display = "none"; });
 """
 
 
