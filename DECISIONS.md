@@ -269,9 +269,11 @@ executed).
 libraries otherwise. By default it tests every implementation it finds on the machine. It's
 Linux only for now.
 
-Every run is fresh. Stored results from earlier runs are only for development, and only used
-when asked for with `--reuse`; `--rerun` names the decoders to run again. Nothing tries to
-detect on its own whether the machine has changed.
+Every run is fresh. Stored results from earlier runs are only for development, only used when
+asked for with `--reuse`, and then only for the same program: a result is keyed on the program
+that produced it, its version string, revision, files and shared libraries, so a rebuilt or
+upgraded decoder runs afresh. `--rerun` names the decoders to run again regardless, for a change
+the key does not see.
 
 Decoders get 60 seconds per file, and 120 under valgrind. A decoder that times out is reported
 as hanging, without being retried. If valgrind fails for any other reason, the whole run stops

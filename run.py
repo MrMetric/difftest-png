@@ -5,9 +5,10 @@
 
 Implementations come from impls.toml; a column whose program is missing is skipped with a
 notice. Each (implementation, test) runs under address-space, file-size and wall-clock limits;
-native columns also run under valgrind memcheck. Every run is fresh unless --reuse is given: then
-results stored by earlier runs are used for every column except the reference decoder and those
-named in --rerun (name a column there after rebuilding or upgrading it).
+native columns also run under valgrind memcheck. Every run is fresh unless --reuse is given: then a
+column's results stored by an earlier run of the same program (execute.identity: its version, revision,
+files and shared libraries) are used, for every column except the reference decoder and those named in
+--rerun, which run afresh whatever their identity says.
 The whole run sits in a systemd scope capped at half the machine's memory.
 
 Judging decodes each test file in-process once (expect.reading): every interpretation of its pixels and
@@ -75,6 +76,8 @@ class Impl:
 	max_depth: int = 16
 	env: dict[str, str] = field(default_factory=dict)
 	memcheck: bool = False
+	version: str | None = None  # version_of(), filled by identify()
+	identity: str = ""  # execute.identity(), filled by identify(); no result is stored or reused without it
 
 
 @dataclass
@@ -172,6 +175,15 @@ def version_of(impl: Impl) -> str | None:
 	if "#" in v and v.startswith(("registry+", "path+", "git+")):  # cargo pkgid: keep "name version"
 		v = v.rsplit("#", 1)[1].replace("@", " ")
 	return v
+
+
+def identify(impls: list[Impl]) -> None:
+	"""Fill each column's `version`, running its version command once, and `identity` (execute.identity)."""
+	t0 = time.monotonic()
+	for impl in impls:
+		impl.version = version_of(impl)
+		impl.identity = execute.identity(impl, impl.version)
+	print(f"[identity] {len(impls)} columns in {time.monotonic() - t0:.1f} s", file=sys.stderr)
 
 
 _unpacked: dict[str, np.ndarray] = {}
@@ -464,24 +476,28 @@ def main() -> None:
 	if not args.no_memcheck and not memcheck:
 		print("[memcheck] valgrind not found; memory pass skipped", file=sys.stderr)
 
+	identify(avail)
 	t0 = time.monotonic()
 	fresh = set(args.rerun)
 	reuse = {i.name for i in avail if args.reuse and not fresh & {i.name, i.project}}
-	raw, missing = run_all(avail, tests, args.manifest.parent, memcheck, args.jobs, reuse)
+	raw, missing, reused = run_all(avail, tests, args.manifest.parent, memcheck, args.jobs, reuse)
 	for name, why in sorted(missing.items()):
 		print(f"[skip] {name}: not installed ({why})", file=sys.stderr)
 	avail = [i for i in avail if i.name not in missing]
 	assert set(REFERENCES.values()) <= {i.name for i in avail}, "the reference decoder must be runnable"
-	print(f"[run] {len(raw)} results in {time.monotonic() - t0:.0f} s", file=sys.stderr)
+	print(f"[run] {len(raw)} results in {time.monotonic() - t0:.0f} s"
+		+ (f"; stored ones reused: {', '.join(f'{n} ({c})' for n, c in sorted(reused.items()))}" if reused else ""), file=sys.stderr)
 	_judge_and_report(args, tests, avail, raw, memcheck)
 
 
 def run_all(avail: list[Impl], tests: list[Test], base: Path, memcheck: bool, jobs: int, reuse: set[str] = frozenset()
-		) -> tuple[dict[tuple[str, str], dict], dict[str, str]]:
-	"""(raw result per (implementation, test), why each implementation found not installed is missing)."""
+		) -> tuple[dict[tuple[str, str], dict], dict[str, str], dict[str, int]]:
+	"""(raw result per (implementation, test), why each implementation found not installed is missing, how many
+	stored results each implementation reused)."""
 	raw: dict[tuple[str, str], dict] = {}
 	images: dict[str, tuple] = {}
 	missing: dict[str, str] = {}
+	reused: dict[str, int] = {}
 	with ProcessPoolExecutor(max_workers=jobs) as ex:
 		futs = {ex.submit(run_one, impl, base / t.file, False, impl.name in reuse): (impl.name, t.id) for impl in avail for t in tests}
 		if memcheck:
@@ -490,10 +506,12 @@ def run_all(avail: list[Impl], tests: list[Test], base: Path, memcheck: bool, jo
 		for n, fut in enumerate(as_completed(futs), 1):
 			key = futs[fut]
 			try:
-				r = fut.result()
+				r, stored = fut.result()
 			except execute.Missing as e:
 				missing.setdefault(key[0], str(e))
 				continue
+			if stored:
+				reused[key[0]] = reused.get(key[0], 0) + 1
 			if r.get("image"):
 				r["image"] = images.setdefault(r["image"][0], r["image"])  # one copy per distinct output
 			if len(key) == 3:
@@ -506,7 +524,7 @@ def run_all(avail: list[Impl], tests: list[Test], base: Path, memcheck: bool, jo
 	partly = {name for name in missing if any(k[0] == name and "verdict" in v for k, v in raw.items())}
 	assert not partly, f"implementations missing for only some tests: {sorted(partly)}"
 	raw = {k: v for k, v in raw.items() if k[0] not in missing}
-	return raw, missing
+	return raw, missing, reused
 
 
 def load_spec() -> tuple[dict[str, dict], dict[str, dict]]:
@@ -553,6 +571,7 @@ def thumbnail(rgba: np.ndarray) -> dict:
 
 
 def _judge_and_report(args, tests: list[Test], avail: list[Impl], raw: dict, memcheck: bool) -> None:
+	assert all(i.identity for i in avail), "identify() fills the version each column reports"
 	problems = []
 	results: dict[str, dict[str, dict]] = {impl.name: {} for impl in avail}
 	report_tests = []
@@ -626,7 +645,7 @@ def _judge_and_report(args, tests: list[Test], avail: list[Impl], raw: dict, mem
 		"problems": problems,
 		"implementations": [{
 			"name": i.name, "project": i.project, "variant": i.variant, "lineage": i.lineage,
-			"version": version_of(i), "revision": i.revision, "notes": i.notes, "diagnostics": i.diagnostics, "pixels": i.pixels,
+			"version": i.version, "revision": i.revision, "notes": i.notes, "diagnostics": i.diagnostics, "pixels": i.pixels,
 			"max_depth": i.max_depth, "memcheck": memcheck and i.memcheck,
 			"summary": summarize(results[i.name], {t["id"]: t["conforms"] for t in report_tests}, {t.id: transparency_source(t.reaches) for t in tests}),
 		} for i in avail],

@@ -22,14 +22,17 @@ Shims with a build step are compiled first if their toolchain is present; any im
 whose program is missing is skipped with a notice. Results go to `out/report.json` and
 `out/report.html`; the page reads without JavaScript. Options: `--no-memcheck` skips the valgrind pass, `--no-build` skips
 compiling, `--jobs N`, `--out DIR`, `--head DIR` (see below). Every run is fresh; while
-iterating, `--reuse` takes stored results from earlier runs for every implementation except the
-reference decoder, and `--rerun IMPL ...` runs the named ones afresh (do that after rebuilding
-or upgrading one). A program that is not installed (or a shim whose library is missing, exit
-127) is skipped with a notice rather than judged.
+iterating, `--reuse` takes stored results from earlier runs of the same program for every
+implementation except the reference decoder, and `--rerun IMPL ...` runs the named ones afresh
+regardless. A program that is not installed (or a shim whose library is missing, exit 127) is
+skipped with a notice rather than judged.
 
 After editing shims, use `--rebuild IMPL ...` to rebuild the affected compiled or copied
-adapters (including HEAD variants), and run them fresh. `--rebuild` alone rebuilds all
-selected implementations. Cached results do not fingerprint source files or binaries.
+adapters (including HEAD variants). `--rebuild` alone rebuilds all selected implementations.
+A stored result belongs to one program: the version it reports, its `revision` in `impls.toml`,
+and the contents of the files it names, the files beside them and the shared libraries it loads.
+A change to any of these runs it afresh. A change elsewhere, such as a Python package installed
+in a HEAD build's virtual environment, needs `--rerun`.
 
 Linux only (the runner uses `resource` limits). Needs Python via `uv`; each implementation
 needs its own toolchain:
