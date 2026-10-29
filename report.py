@@ -100,7 +100,7 @@ code{font-size:.9em}
 #mx thead{position:sticky;top:0;background:#151515;z-index:1}
 #mx tr{display:grid;grid-template-columns:32rem repeat(var(--v),1.6rem);content-visibility:auto;contain-intrinsic-size:auto 1.8rem}
 #mx tr[hidden]{display:none}
-#mx td,#mx th{display:block;border-width:0 1px 1px 0;grid-row:1}
+#mx td,#mx th{display:block;box-sizing:border-box;border-width:0 1px 1px 0;grid-row:1}
 #mx{border-left:1px solid #444;border-top:1px solid #444}
 #mx thead th{position:static;padding:.3rem .1rem}
 #mx tr.kinds th{height:auto;line-height:1.2}
@@ -109,7 +109,7 @@ code{font-size:.9em}
 #mx td>i{display:none;font-style:normal}
 #mx td:has(>i){padding:0}
 #mx th.ctl{display:flex;flex-direction:column;justify-content:end;align-items:start;gap:.3rem;padding:.3rem .4rem;text-align:left;font-size:.9rem}
-#mx{position:relative}
+#mx{position:relative;width:max-content}
 #mx .hl{position:absolute;display:none;pointer-events:none;background:rgba(255,255,255,.09);z-index:2}
 #mx tr.kinds th.ctl{flex-direction:row;align-items:center;flex-wrap:wrap;gap:.3rem 1rem}
 """ + "".join(f".{cls}{{{style}}}" for cls, style in SEVERITY_STYLE.items())
@@ -776,7 +776,7 @@ filter();
 const mx = byId("mx"), strips = [0, 1].map(() => mx.appendChild(Object.assign(document.createElement("div"), {className: "hl"})));
 mx.addEventListener("mouseover", e => {
 	const c = e.target.closest("td,th");
-	if (!c || !mx.contains(c)) return;
+	if (!c || !mx.contains(c)) { for (const s of strips) s.style.display = "none"; return; }
 	const m = mx.getBoundingClientRect(), r = c.parentElement.getBoundingClientRect(), b = c.getBoundingClientRect();
 	const x = m.left + mx.clientLeft, y = m.top + mx.clientTop;
 	const inHead = c.closest("thead") !== null, isName = c === c.parentElement.firstElementChild;
