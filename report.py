@@ -4,7 +4,8 @@
 
 run.py calls write() itself; this entry point re-renders a saved report from the JSON alone.
 The page reads completely without JavaScript: the lens switch and the failing-only filter are CSS. The
-script (SCRIPT) adds column sorting, a column picker and row filters; its controls are `hidden` until it runs.
+script (SCRIPT) adds column sorting, a column picker, row filters and the implementations table's header sort; its
+controls are `hidden` until it runs.
 """
 import html
 import json
@@ -50,7 +51,17 @@ LEGEND = [
 	("api", "api", "returned without error, but not an image: wrong size, missing rows or non-numeric samples"),
 	("shim", "shim", "the wrapper itself failed; listed under problems"),
 ]
-THUMB_PX = 60  # the height of an output's thumbnail
+THUMB_PX = 64  # the square box an output's thumbnail fits in; square, so a picture and its transpose get the same scale
+# One line above each matrix-shaped table on what a click does there; the script shows them, since it does the work.
+HINT = {t: f"<p class=js hidden>{text}</p>" for t, text in {
+	"viol": "You can click any column header to make the table show only the rows where that implementation is above 0, and "
+		"click it again to toggle this off. You can also click a row's name to sort the columns by it: fewest first, then most "
+		"first, then back by name.",
+	"feat": "You can click any column header to make the table show only the families that implementation fails in, "
+		"or a family's name to make the results table show only that family.",
+	"mx": "You can click any column header to make the table show only the tests that implementation fails. "
+		"Click the same one again to toggle this filter off.",
+}.items()}
 EDITION = {"2": "2nd edition", "3": "3rd edition"}  # the lens names a reader sees
 CSS = """
 body{margin:1rem;font:1rem/1.5 system-ui,sans-serif;color:#ddd;background:#151515}
@@ -70,6 +81,11 @@ th.ed span{writing-mode:vertical-rl;transform:rotate(180deg);display:inline-bloc
 #viol tbody,#feat tbody{display:none}
 .eds{margin:.3rem 0}
 #sum tr.off td:not(:first-child){opacity:.4}
+th.asc::after{content:" ▴";color:#999}
+th.desc::after{content:" ▾";color:#999}
+.m th.pick{background:#24364f;color:#fff;box-shadow:inset 0 0 0 2px #8bbcff}
+.m td.pick{box-shadow:inset 0 0 0 9rem rgba(139,188,255,.14)}
+#viol td,#feat td{padding:0 .25rem}
 .m .kb{border-left:3px solid #999}
 .s tr.kb>td{border-top:3px solid #999}
 .f tbody th,.v tbody th{white-space:nowrap}
@@ -89,16 +105,16 @@ summary{cursor:pointer}
 .anc{background:#3a3a3a}.crit{background:#a5641c}.invalid{background:#8a1d4a}.sig{background:#b01c1c}
 .trailer{background:#222;border-style:dashed!important;border-color:#777!important}
 .cs .bad{border-color:#f44}.cs .cut{border-right:6px solid #f44}.cut::after{content:" …"}.cs .dim{opacity:.4}
-.outs{display:flex;flex-wrap:wrap;gap:.8rem;align-items:flex-start;font-size:.85rem}
-.outs div{display:flex;flex-direction:column;gap:.2rem;max-width:16rem}
-.t{display:block;height:60px;image-rendering:pixelated;background:var(--i) 0 0/100% 100%,repeating-conic-gradient(#777 0 25%,#555 0 50%) 0 0/8px 8px}
-.big{display:block;height:60px;line-height:60px}
+.outs{display:grid;grid-template-columns:repeat(2,1fr);gap:.8rem 1rem;font-size:.85rem}
+.outs div{display:flex;flex-direction:column;gap:.2rem}
+.t{display:block;image-rendering:pixelated;background:var(--i) 0 0/100% 100%,repeating-conic-gradient(#777 0 25%,#555 0 50%) 0 0/8px 8px}
 .legend td:first-child{text-align:center}
 .note{color:#ddd}
 code{font-size:.9em}
 #mx,#mx thead,#mx tbody{display:block}
 #mx thead{position:sticky;top:0;background:#151515;z-index:1}
-#mx tr{display:grid;grid-template-columns:32rem repeat(var(--v),1.6rem);content-visibility:auto;contain-intrinsic-size:auto 1.8rem}
+#mx tr{display:grid;grid-template-columns:32rem repeat(var(--v),1.6rem)}
+#mx tbody tr{content-visibility:auto;contain-intrinsic-size:auto 1.8rem}
 #mx tr[hidden]{display:none}
 #mx td,#mx th{display:block;box-sizing:border-box;border-width:0 1px 1px 0;grid-row:1}
 #mx{border-left:1px solid #444;border-top:1px solid #444}
@@ -108,11 +124,16 @@ code{font-size:.9em}
 #mx details[open]{width:auto}
 #mx td>i{display:none;font-style:normal}
 #mx td:has(>i){padding:0}
-#mx th.ctl{display:flex;flex-direction:column;justify-content:end;align-items:start;gap:.3rem;padding:.3rem .4rem;text-align:left;font-size:.9rem}
+#mx th.ctl{display:grid;grid-template-columns:max-content 1fr;align-content:end;align-items:center;justify-items:start;gap:.3rem .5rem;padding:.3rem .4rem;text-align:left;font-size:.9rem}
+#mx th.ctl label{display:contents}
+#mx th.ctl label[hidden]{display:none}
+#q{width:20rem}
+#mx th.ctl label.gap>*{margin-top:.5rem}
 #mx{position:relative;width:max-content}
-#mx .hl{position:absolute;display:none;pointer-events:none;background:rgba(255,255,255,.09);z-index:2}
-#mx tr.kinds th.ctl{flex-direction:row;align-items:center;flex-wrap:wrap;gap:.3rem 1rem}
-""" + "".join(f".{cls}{{{style}}}" for cls, style in SEVERITY_STYLE.items())
+.hl{position:absolute;display:none;pointer-events:none;background:rgba(255,255,255,.09);z-index:2}
+#viol,#feat{position:relative}
+#mx tr.kinds th.ctl{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.3rem 1rem}
+""" + "".join(f".{cls}{{{style}}}" for cls, style in SEVERITY_STYLE.items()) + f".outs .b{{display:flex;align-items:end;height:{THUMB_PX}px}}"
 
 
 def esc(s) -> str:
@@ -206,7 +227,7 @@ def edition_boxes(table: str, lenses: list[str]) -> str:
 def edition_css(lenses: list[str]) -> str:
 	"""The editions each table shows. Tables with a block of rows per edition (tbody.e<lens>) show the ticked
 	blocks, with a bar between two shown blocks; the matrix shows, in a cell where the editions disagree, the ticked
-	editions' glyphs (td>i.e<lens>) stacked with a bar between; the failing-only filter hides a row that passes
+	editions' glyphs (td>i.e<lens>) stacked with a bar between; the show select's `any` option hides a row that passes
 	under every ticked edition. Nothing ticked shows no rows."""
 	out = []
 	for t in ("viol", "feat"):
@@ -220,7 +241,7 @@ def edition_css(lenses: list[str]) -> str:
 	for picked in range(1, 1 << len(lenses)):  # every non-empty choice of editions
 		chosen = [l for n, l in enumerate(lenses) if picked >> n & 1]
 		cond = "".join(f":has(#mx-e{l}:checked)" if l in chosen else f":not(:has(#mx-e{l}:checked))" for l in lenses)
-		out.append(f"body:has(#f:checked){cond} #mx tr{''.join(f'.ok{l}' for l in chosen)}{{display:none}}")
+		out.append(f"body:has(#f option[value=any]:checked){cond} #mx tr{''.join(f'.ok{l}' for l in chosen)}{{display:none}}")
 	return "".join(out)
 
 
@@ -366,18 +387,26 @@ def strip(walk: dict) -> str:
 
 
 def thumb(digest: str, images: dict, classes: dict[str, str]) -> str:
-	"""An image at THUMB_PX high (its CSS class holds the PNG), or its size when report.json has no PNG of it."""
+	"""An image in its box (its CSS class holds the PNG and its size), or its size when report.json has no PNG of it."""
 	im = images[digest]
-	if "png" not in im:
-		return f"<span class=big>{im['width']}×{im['height']}</span>"
-	return f"<i class='t {classes[digest]}'></i>"
+	inner = f"<i class='t {classes[digest]}'></i>" if "png" in im else f"{im['width']}×{im['height']}"
+	return f"<span class=b>{inner}</span>"
+
+
+def thumb_size(im: dict) -> tuple[int, int]:
+	"""A thumbnail's size: the image at the largest whole-number scale that fits the box, so its pixels are even,
+	or scaled down to fit when it is larger than the box."""
+	k = min(THUMB_PX / im["width"], THUMB_PX / im["height"])
+	k = int(k) if k >= 1 else k
+	return max(1, round(im["width"] * k)), max(1, round(im["height"] * k))
 
 
 def thumb_css(images: dict, classes: dict[str, str]) -> str:
 	out = []
 	for digest, cls in classes.items():
 		im = images[digest]
-		out.append(f".{cls}{{width:{max(1, round(THUMB_PX * im['width'] / im['height']))}px;--i:url(data:image/png;base64,{im['png']})}}")
+		w, h = thumb_size(im)
+		out.append(f".{cls}{{width:{w}px;height:{h}px;--i:url(data:image/png;base64,{im['png']})}}")
 	return "".join(out)
 
 
@@ -426,9 +455,11 @@ def expansion(test: dict, report: dict, classes: dict[str, str]) -> str:
 		out.append("<p>spec: " + ", ".join(refs) + "</p>")
 	outs = []
 	if test["preferred"]:
-		# The expected picture once, with how many columns produced exactly it; only the other buckets are named.
+		# The expected picture once, with how many columns produced exactly it. Its columns go unnamed only while
+		# it outnumbers every other bucket, so that the names listed are the exceptions.
 		exact = [b for b in test["buckets"] if b["digest"] == test["preferred"]]
-		matched = f"{exact[0]['count']} match" if exact else "none match"
+		others = max((b["count"] for b in test["buckets"] if b["digest"] != test["preferred"]), default=0)
+		matched = f"{exact[0]['count']} match" + ("" if exact[0]["count"] > others else ": " + esc(", ".join(exact[0]["columns"]))) if exact else "none match"
 		outs.append(f"<div>{thumb(test['preferred'], report['images'], classes)}<span>expected</span><span>{matched}</span></div>")
 	for b in test["buckets"]:
 		if b["digest"] == test["preferred"]:
@@ -472,7 +503,7 @@ def feature_table(report: dict, groups: list[list[dict]]) -> str:
 	lenses = report["lenses"]
 	bounds = boundaries(groups)
 	fams = families(report)
-	out = [f"<h2>By family</h2>{edition_boxes('feat', lenses)}<table class='m f' id=feat><thead>{head_rows(groups, 'family', corner_span=2)}</thead>"]
+	out = [f"<h2>By family</h2>{HINT['feat']}{edition_boxes('feat', lenses)}<table class='m f' id=feat><thead>{head_rows(groups, 'family', corner_span=2)}</thead>"]
 	for lens in lenses:
 		out.append(f"<tbody class=e{lens}>")
 		for row, fam in enumerate(fams):
@@ -508,7 +539,8 @@ def alpha0_text(by_source: dict[str, dict[str, int]]) -> tuple[str, str]:
 
 def implementations_table(report: dict, groups: list[list[dict]]) -> str:
 	"""Each column group's names, versions and lineage, behind a checkbox (script only) that shows or hides its
-	column everywhere; the rows carry what the script sorts by."""
+	column everywhere; the rows carry what the script sorts the columns by. The script sorts the table itself by the
+	header a reader clicks."""
 	lenses = report["lenses"]
 	order = {i["name"]: n for n, i in enumerate(report["implementations"])}
 	first = {kind(g[0]): g for g in reversed(groups)}  # the first group of each kind
@@ -532,7 +564,7 @@ def violations_table(report: dict, groups: list[list[dict]]) -> str:
 	kind and a column per group, as the matrix has them, in a block of rows per edition labelled down its side."""
 	lenses = report["lenses"]
 	bounds = boundaries(groups)
-	out = [f"<h2>Violations</h2>{edition_boxes('viol', lenses)}<table class='m v' id=viol><thead>{head_rows(groups, '', corner_span=2)}</thead>"]
+	out = [f"<h2>Violations</h2>{HINT['viol']}{edition_boxes('viol', lenses)}<table class='m v' id=viol><thead>{head_rows(groups, '', corner_span=2)}</thead>"]
 	for lens in lenses:
 		rows: list[tuple[str, list[str]]] = [(SUMMARY[k], []) for k in SUMMARY] + [("silent", []), ("strict", [])]
 		for n, g in enumerate(groups):
@@ -621,6 +653,18 @@ def disclaimer() -> str:
 	return "<h2>Human disclaimer</h2>" + MarkdownIt("commonmark").render(body)
 
 
+def filter_form(report: dict) -> str:
+	"""The row filters and the column sort, one labelled line each. `show` works without the script: edition_css()
+	hides the passing rows when its `any` option is chosen. The script adds its per-column options (the tests one
+	column fails, also reached by clicking the column's header in any of the three matrix-shaped tables) and shows
+	the other controls."""
+	return ("<label><span>show</span><select id=f><option value=''>every test<option value=any>tests some shown implementation fails</select></label>"
+		"<label class=js hidden><span>family</span><select id=fam><option value=''>every family" + "".join(f"<option>{esc(f)}" for f in families(report)) + "</select></label>"
+		"<label class=js hidden><span>expectation</span><select id=ex><option value=''>any" + "".join(f"<option>{e}" for e in report["expectations"][::-1]) + "</select></label>"
+		"<label class=js hidden><span>search</span><input id=q type=search placeholder='id or note'></label>"
+		"<label class='js gap' hidden><span>sort columns</span><select id=sort><option value=n>by name<option value=v>by violations</select></label>")
+
+
 def render(report: dict) -> str:
 	groups = column_groups(report)
 	tests = report["tests"]
@@ -644,19 +688,14 @@ def render(report: dict) -> str:
 
 	out.append(disclaimer())
 	out.append(legend(report))
-	sort_select = "<label class=js hidden>sort columns <select class=sort><option value=n>by name<option value=v>by violations</select></label>"
-	out.append(f"<p>{sort_select}</p>")
 	out.append(implementations_table(report, groups))
 	out.append(violations_table(report, groups))
 	out.append(properties(report, groups))
 	out.append(feature_table(report, groups))
-	# The matrix's controls sit in its sticky header: editions and the failing-only filter in the top corner, the
-	# script's sort, search and row filters in the tall corner under it.
-	top = edition_boxes("mx", lenses).replace("<p class=eds>", "<span>").replace("</p>", "</span>") + "<label><input type=checkbox id=f> only tests some implementation fails</label><span id=n class=js hidden></span>"
-	filters = (f"{sort_select}<input class=js hidden id=q type=search placeholder='id, note or family'><span class=js hidden>"
-		+ " ".join(f"<label><input type=checkbox checked data-e={e}> {e}</label>" for e in report["expectations"][::-1])
-		+ "</span><select class=js hidden id=fam><option value=''>every family" + "".join(f"<option>{esc(f)}" for f in families(report)) + "</select>")
-	out.append(f"<h2 id=results>Results</h2><table class=m id=mx><thead>{head_rows(groups, filters, matrix=True, corner_top=top)}</thead><tbody>")
+	# The matrix's controls sit in its sticky header: the editions and the count of shown rows in the top corner,
+	# the row filters and the column sort as a labelled form in the tall corner under it.
+	top = edition_boxes("mx", lenses).replace("<p class=eds>", "<span>").replace("</p>", "</span>") + "<span id=n class=js hidden></span>"
+	out.append(f"<h2 id=results>Results</h2>{HINT['mx']}<table class=m id=mx><thead>{head_rows(groups, filter_form(report), matrix=True, corner_top=top)}</thead><tbody>")
 	for t in tests:
 		rs = [report["results"][g[0]["name"]][t["id"]] for g in groups]
 		ok = "".join(f" ok{lens}" for lens in lenses if all(r["severity"][lens] == "pass" for r in rs)).strip()
@@ -678,47 +717,77 @@ const sumRows = $("#sum tbody tr");
 // A row's column cells: its tds, and in the header the name cells, which alone carry a title.
 const cellsOf = new Map([...$("#viol tr:not(.kinds)"), ...$("#feat tr:not(.kinds)")].map(r => [r, [...r.children].filter(c => c.tagName == "TD" || c.hasAttribute("title"))]));
 const groups = sumRows.map((tr, i) => ({i, tr, name: tr.dataset.n, o: +tr.dataset.o, k: +tr.dataset.k, on: true}));
-const byTr = new Map(groups.map(g => [g.tr, g]));
 const cmp = (a, b) => a < b ? -1 : a > b ? 1 : 0;
-const sorts = $(".sort"), sortBy = sorts[0], dyn = byId("dyn");
+const dyn = byId("dyn"), sortBy = byId("sort"), viol = byId("viol"), feat = byId("feat");
 const ticked = t => $(`[id^=${t}-e]`).filter(e => e.checked).map(e => e.id.slice(-1));
-const edition = () => { const e = ticked("viol"); return e.includes("3") || !e.length ? "3" : e[0]; };
+// Each table orders its own columns, by kind first. The matrix's are by name or, as its sort select says, by
+// violations under its ticked edition (the third when both are); the violations table's by the row a reader
+// clicked, fewest first, on a second click most first, on a third by name again; the family table's by name.
+// The implementations table sorts its rows by its headers (sortSum).
+let mxOrder = groups, violOrder = groups, sortRow = null, sortDir = 0;
+const edition = () => { const e = ticked("mx"); return e.includes("3") || !e.length ? "3" : e[0]; };
 function sort() {
 	const L = edition(), d = g => g.tr.dataset;
-	const key = {
-		v: (a, b) => d(a)["m" + L] - d(b)["m" + L] || d(a)["s" + L] - d(b)["s" + L] || cmp(a.name, b.name),
-		n: (a, b) => cmp(a.name, b.name),
-	}[sortBy.value];
-	const order = [...groups].sort((a, b) => a.k - b.k || key(a, b));
-	for (const g of order) g.tr.parentNode.append(g.tr);
-	for (const [r, cells] of cellsOf) r.append(...order.map(g => cells[g.i]));
+	mxOrder = sortBy.value == "n" ? groups : [...groups].sort((a, b) => a.k - b.k || d(a)["m" + L] - d(b)["m" + L] || d(a)["s" + L] - d(b)["s" + L] || cmp(a.name, b.name));
+	const cells = sortRow && cellsOf.get(sortRow), v = g => +cells[g.i].textContent || 0;
+	violOrder = sortRow ? [...groups].sort((a, b) => a.k - b.k || sortDir * (v(a) - v(b)) || cmp(a.name, b.name)) : groups;
 	place();
 }
-// Columns in their current order: the tables' kind boundaries and kind spans, and the matrix's placement CSS.
+for (const tr of $("#viol tbody tr")) {
+	const th = tr.querySelector("th:not(.ed)");
+	th.style.cursor = "pointer";
+	th.onclick = () => {
+		sortDir = tr === sortRow ? (sortDir == 1 ? -1 : 0) : 1;
+		sortRow = sortDir ? tr : null;
+		for (const t of $("#viol tbody th")) { t.classList.toggle("asc", t === th && sortDir == 1); t.classList.toggle("desc", t === th && sortDir == -1); }
+		sort();
+	};
+}
+// A table's columns in `order`: its cells moved, and its kind bars on the first shown column of each kind, since
+// it drops unticked columns.
+const rowsOf = t => [...cellsOf].filter(([r]) => t.contains(r));
+function arrange(t, order) {
+	const seen = new Set();
+	for (const [r, cells] of rowsOf(t)) r.append(...order.map(g => cells[g.i]));
+	for (const g of order.filter(g => g.on)) {
+		const first = !seen.has(g.k) && g.k > 0;
+		seen.add(g.k);
+		for (const [, cells] of rowsOf(t)) cells[g.i].classList.toggle("kb", first);
+	}
+}
+// The matrix's placement CSS from its order, the two tables' cells from theirs, and every table's kind spans.
 function place() {
-	const order = [...byId("sum").tBodies[0].rows].map(tr => byTr.get(tr));
-	const shown = order.filter(g => g.on);
+	const shown = mxOrder.filter(g => g.on);
 	const seen = new Set(), n = {}, css = [`#mx{--v:${shown.length};` + shown.map((g, i) => `--c${g.i}:${i + 2};`).join("") + "}"];
 	let at = 2;
-	// The implementations table keeps unticked rows, dimmed, so its bars follow the first row of each kind; the
-	// other tables drop unticked columns, so theirs follow the first shown one.
-	const firstRow = new Set();
-	for (const g of order) if (!firstRow.has(g.k)) { firstRow.add(g.k); g.tr.classList.toggle("kb", g.k > 0); } else g.tr.classList.remove("kb");
 	for (const g of shown) {
 		const first = !seen.has(g.k) && g.k > 0;
 		seen.add(g.k);
 		n[g.k] = (n[g.k] || 0) + 1;
-		for (const cells of cellsOf.values()) cells[g.i].classList.toggle("kb", first);
 		if (first) css.push(`#mx .c${g.i}{border-left:3px solid #999}`);
 	}
-	for (const g of order) if (!g.on) css.push(`#mx .c${g.i}{display:none}`);
+	for (const g of groups) if (!g.on) css.push(`#mx .c${g.i}{display:none}`);
 	for (const th of $("tr.kinds th[data-k]")) {
 		const c = n[th.dataset.k] || 0;
 		th.hidden = !c;
 		if (th.closest("#mx")) { th.style.gridColumn = `${at}/span ${c || 1}`; at += c; } else th.colSpan = c || 1;
 	}
 	dyn.textContent = css.join("");
+	arrange(viol, violOrder);
+	arrange(feat, groups);
 }
+// The implementations table sorts by the header a reader clicks, within each kind, and in reverse on a second
+// click. It keeps unticked rows, dimmed, so its bars follow the first row of each kind.
+const heads = $("#sum thead th");
+let sumBy = 1, sumDir = 1;
+function sortSum() {
+	const text = g => g.tr.children[sumBy].textContent.toLowerCase();
+	const order = [...groups].sort((a, b) => a.k - b.k || sumDir * text(a).localeCompare(text(b), undefined, {numeric: true}) || cmp(a.name, b.name));
+	const first = new Set();
+	for (const g of order) { g.tr.parentNode.append(g.tr); g.tr.classList.toggle("kb", !first.has(g.k) && g.k > 0); first.add(g.k); }
+	heads.forEach((th, i) => { th.classList.toggle("asc", i == sumBy && sumDir > 0); th.classList.toggle("desc", i == sumBy && sumDir < 0); });
+}
+heads.slice(1).forEach((th, i) => { th.style.cursor = "pointer"; th.onclick = () => { sumDir = i + 1 == sumBy ? -sumDir : 1; sumBy = i + 1; sortSum(); }; });
 const picks = $("[data-g]");
 for (const c of picks) c.onchange = () => {
 	const g = groups[c.dataset.g];
@@ -744,46 +813,85 @@ const fails = rows.map(r => {
 	return f;
 });
 for (const r of rows) r.classList.remove(...EDS.map(L => "ok" + L));
-const failing = byId("f");
-const q = byId("q"), fam = byId("fam"), exp = $("[data-e]");
+// The show select's per-column options: the tests one column fails, in the header's order under each kind.
+// Clicking a column's header in any of the three tables picks it too, and again unpicks it. The picked column's
+// headers and cells show it (mark), and each table narrows its rows to it its own way (narrow).
+const show = byId("f"), names = $("#mx thead tr:not(.kinds) th").slice(1), pk = document.head.appendChild(document.createElement("style"));
+const kindName = Object.fromEntries($("#mx tr.kinds th[data-k]").map(th => [th.dataset.k, th.textContent]));
+for (const [k, name] of Object.entries(kindName)) {
+	const og = show.appendChild(Object.assign(document.createElement("optgroup"), {label: name}));
+	for (const g of groups) if (g.k == k) og.append(new Option(`tests ${names[g.i].textContent} fails`, "c" + g.i));
+}
+const inHead = ([r]) => r.parentElement.tagName == "THEAD", headers = [...cellsOf].filter(inHead).map(([, cells]) => cells);
+const picked = () => show.value.startsWith("c") ? +show.value.slice(1) : -1;
+function mark() {
+	const c = picked();
+	groups.forEach((g, i) => { for (const cells of [names, ...headers]) cells[i].classList.toggle("pick", i == c); });
+	for (const [r, cells] of cellsOf) if (!inHead([r])) cells.forEach((cell, i) => cell.classList.toggle("pick", i == c));
+	pk.textContent = c < 0 ? "" : `#mx .c${c}{box-shadow:inset 0 0 0 3rem rgba(139,188,255,.14)}`;
+}
+function pick(i) {
+	show.value = show.value == "c" + i ? "" : "c" + i;
+	filter();
+}
+for (const cells of [names, ...headers]) cells.forEach((th, i) => { th.style.cursor = "pointer"; th.onclick = () => pick(i); });
+// The two summary tables keep, for a picked column, the rows where it is above 0 (a family it fails in, a kind
+// of result it has), the way the matrix keeps the tests it fails. The edition label down a block's side moves
+// to the first row left, with the block's remaining height.
+function narrow() {
+	const c = picked();
+	for (const t of [viol, feat]) for (const tb of t.tBodies) {
+		const ed = tb.querySelector("th.ed"), rows = [...tb.rows];
+		for (const r of rows) r.hidden = c >= 0 && !(+cellsOf.get(r)[c].textContent.split("/")[0]);
+		const left = rows.filter(r => !r.hidden);
+		if (left.length) { ed.rowSpan = left.length; left[0].prepend(ed); }
+	}
+}
+const q = byId("q"), fam = byId("fam"), ex = byId("ex");
 function filter() {
-	const eds = ticked("mx"), s = q.value.toLowerCase(), on = new Set(exp.filter(e => e.checked).map(e => e.dataset.e));
-	const fails_shown = i => eds.some(L => [...fails[i][L]].some(c => groups[c].on));
-	rows.forEach((r, i) => r.hidden = !(text[i].includes(s) && eds.some(L => on.has(r.dataset["e" + L])) && (!fam.value || r.dataset.f == fam.value)
-		&& (!failing.checked || fails_shown(i))));
+	const eds = ticked("mx"), s = q.value.toLowerCase(), want = show.value;
+	const failing = want == "any" ? i => eds.some(L => [...fails[i][L]].some(c => groups[c].on))
+		: want ? (c => i => eds.some(L => fails[i][L].has(c)))(+want.slice(1)) : () => true;
+	rows.forEach((r, i) => r.hidden = !(text[i].includes(s) && (!ex.value || eds.some(L => r.dataset["e" + L] == ex.value))
+		&& (!fam.value || r.dataset.f == fam.value) && failing(i)));
 	count();
+	mark();
+	narrow();
 }
 // How many rows the filters leave, whichever of them (script or CSS) hid the rest.
 const n = byId("n");
 function count() { n.textContent = `${rows.filter(r => r.checkVisibility()).length} of ${rows.length} tests`; }
-failing.addEventListener("change", filter);
 for (const s of $(".fam")) {
 	const b = document.createElement("button");
 	b.textContent = s.textContent;
 	b.onclick = () => { fam.value = s.textContent; filter(); byId("results").scrollIntoView(); };
 	s.replaceWith(b);
 }
-for (const e of $("[id^=viol-e]")) e.addEventListener("change", () => { if (sortBy.value == "v") sort(); });
-for (const e of $("[id^=mx-e]")) e.addEventListener("change", filter);
-for (const s of sorts) s.onchange = () => { for (const o of sorts) o.value = s.value; sort(); };
-q.oninput = fam.onchange = filter;
-for (const e of exp) e.onchange = filter;
+for (const e of $("[id^=mx-e]")) e.addEventListener("change", () => { filter(); if (sortBy.value == "v") sort(); });
+sortBy.onchange = sort;
+q.oninput = fam.onchange = ex.onchange = show.onchange = filter;
+sortSum();
 sort();
 filter();
-// Hover: a translucent strip over the row and one over the column, placed from the cell under the mouse. They
-// overlap on that cell alone, so it is the brightest; above the sticky header, so the column's name lights up too.
-// Over a test's name only the row lights up, over a column's name only the column; the corner lights nothing.
-const mx = byId("mx"), strips = [0, 1].map(() => mx.appendChild(Object.assign(document.createElement("div"), {className: "hl"})));
-mx.addEventListener("mouseover", e => {
-	const c = e.target.closest("td,th");
-	if (!c || !mx.contains(c)) { for (const s of strips) s.style.display = "none"; return; }
-	const m = mx.getBoundingClientRect(), r = c.parentElement.getBoundingClientRect(), b = c.getBoundingClientRect();
-	const x = m.left + mx.clientLeft, y = m.top + mx.clientTop;
-	const inHead = c.closest("thead") !== null, isName = c === c.parentElement.firstElementChild;
-	strips[0].style.cssText = inHead ? "" : `display:block;left:0;top:${r.top - y}px;width:${mx.clientWidth}px;height:${r.height}px`;
-	strips[1].style.cssText = isName ? "" : `display:block;top:0;left:${b.left - x}px;height:${mx.clientHeight}px;width:${b.width}px`;
-});
-mx.addEventListener("mouseleave", () => { for (const s of strips) s.style.display = "none"; });
+// Hover, in the matrix and the two matrix-shaped tables: a translucent strip over the row and one over the
+// column, placed from the cell under the mouse. They overlap on that cell alone, so it is the brightest; above the
+// sticky header, so the column's name lights up too. Over a row's label only the row lights up, over a column's
+// name or a kind only the column(s); the corner and the edition labels down the side light nothing.
+for (const t of [byId("mx"), byId("viol"), byId("feat")]) {
+	const strips = [0, 1].map(() => t.appendChild(Object.assign(document.createElement("div"), {className: "hl"})));
+	const off = () => { for (const s of strips) s.style.display = "none"; };
+	t.addEventListener("mouseover", e => {
+		const c = e.target.closest("td,th");
+		if (!c || !t.contains(c)) return off();
+		const row = c.parentElement, m = t.getBoundingClientRect(), r = row.getBoundingClientRect(), b = c.getBoundingClientRect();
+		const x = m.left + t.clientLeft, y = m.top + t.clientTop;
+		const onRow = c.closest("thead") === null && !c.classList.contains("ed");
+		const onCol = c.tagName == "TD" ? c !== row.firstElementChild : c.hasAttribute("title") || c.hasAttribute("data-k");
+		strips[0].style.cssText = onRow ? `display:block;left:0;top:${r.top - y}px;width:${t.clientWidth}px;height:${r.height}px` : "";
+		strips[1].style.cssText = onCol ? `display:block;top:0;left:${b.left - x}px;height:${t.clientHeight}px;width:${b.width}px` : "";
+	});
+	t.addEventListener("mouseleave", off);
+}
 """
 
 

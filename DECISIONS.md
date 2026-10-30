@@ -283,9 +283,15 @@ are memory-capped so a runaway decoder can't take down the rest of the system.
 ## The report
 
 The report is one HTML file with everything inline, in a dark theme. It reads completely without
-JavaScript: the edition checkboxes and the "only failing tests" filter are CSS. The script adds
-what CSS can't: sorting columns, hiding columns, and filtering rows by text, expectation class and
-family.
+JavaScript: the edition checkboxes and the filter to the tests some implementation fails are CSS.
+The script adds what CSS can't: sorting columns, hiding columns, filtering rows by text,
+expectation class and family, and picking one column, by its header in any of the three
+matrix-shaped tables, to see what it fails. Tables do not reach into each other: each orders its
+own columns (the matrix by name or violations from its corner, the violations table by a clicked
+row, the implementations table by a clicked header), and the picked column is the one shared
+state, marked in every table, each of which narrows its own rows to it: the matrix to the tests
+it fails, the family table to the families it fails in, the violations table to its rows above 0.
+Nothing scrolls the page. One line above each table says what a click there does.
 
 Each table has its own checkbox per edition and shows the ticked ones, so a reader can flip
 editions where the difference is. The violations and family tables show a block of rows per
@@ -302,7 +308,7 @@ heavier border between them. A validator's accept and a decoder's correct pixels
 results and should not sit side by side looking alike, and a validator's verdict on the file is
 context for reading the decoders' results, so it comes first, where a left-to-right reader meets
 it before them. Within a kind the columns are alphabetical, where a reader looking for one library
-expects it; the page can re-sort them by violations. There is no
+expects it; the matrix can re-sort them by violations, the violations table by any of its rows. There is no
 overall score, because choosing weights for one would be an editorial judgement. A decoder that
 passes every test only means the suite needs more tests.
 
@@ -318,7 +324,9 @@ what the file is, and one sentence per clause says what the specification makes 
 section linked. Those sentences are written once per clause in `spec/clauses.tsv`, in plain
 words; the reference's own fault record stays in the JSON. After that come the expectation under
 each lens, links to the sections the clauses cite, and every output: the expected pixels, then
-each bucket of identical decoder outputs as a thumbnail with the columns that produced it. A
+each bucket of identical decoder outputs as a thumbnail with the columns that produced it. The
+expected bucket's columns go unnamed while it outnumbers every other bucket, so that the names
+listed are the exceptions; where another bucket has as many, it names them too. A
 wrong output is shown, not only counted. Its label says how it differs from the expected pixels,
 and a difference needs no further comment to read as wrong. Where the generator knows a misreading
 that produces exactly those pixels, an invalid filter byte taken as filter None for instance, the
