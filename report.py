@@ -645,14 +645,20 @@ def properties(report: dict, groups: list[list[dict]]) -> str:
 	return "".join(out)
 
 
-def disclaimer() -> str:
-	"""The README's "Human disclaimer" section, verbatim, rendered as CommonMark; the README is its only copy."""
-	head = "\n## Human disclaimer\n\n"
+def extract_readme() -> str:
+	"""The README's human-written section, verbatim, rendered as CommonMark."""
+	head = "# difftest-png\n\n"
 	text = README.read_text(encoding="utf-8")
-	assert text.count(head) == 1, f"{README} must have exactly one '## Human disclaimer' section"
-	body = text.split(head, 1)[1].split("\n## ", 1)[0].strip()
-	assert body, f"{README}: the '## Human disclaimer' section is empty"
-	return "<h2>Human disclaimer</h2>" + MarkdownIt("commonmark").render(body)
+	assert text.startswith(head)
+	# Read everything between the title at the top and the first `##` marker.
+	body = text[len(head):].split("\n## ", 1)[0].strip()
+
+	# Omit the second line.
+	# It's a janky method. Better not forget about this when I edit the README!
+	body = body.split("\n\n")
+	body = "\n\n".join(body[0:1] + body[2:])
+
+	return MarkdownIt("commonmark").render(body)
 
 
 def filter_form(report: dict) -> str:
@@ -680,7 +686,9 @@ def render(report: dict) -> str:
 	out = [f"<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
 		f"<title>PNG decoder conformance, {date}</title><style>{CSS}{edition_css(lenses)}{columns}{thumb_css(report['images'], classes)}</style>"
 		f"<style id=dyn>{matrix_vars(groups)}</style>"]
-	out.append(f"""<h1>PNG decoder conformance</h1>
+	out.append("<h1>PNG decoder conformance</h1>")
+	out.append(extract_readme())
+	out.append(f"""<hr>
 <p>Every decoder below was run over the same {len(tests)} small PNG files from <a href="{REPO}">difftest-png</a>, each one built to test one rule of the PNG specification or one behavior on which some decoder deviates. Run {esc(report['generated'])} on {esc(report['host'])}.</p>
 <p>Each result is rated under each lens: <b>pass</b>, <b class=should>should</b> (the specification says a decoder should do otherwise, e.g. recover a recoverable fault instead of rejecting the image) or <b class=must>must</b> (a requirement is broken: wrong pixels, an invalid file accepted, a valid file rejected, a result that is not an image, a crash, a hang, a memory error). Warnings never count against a decoder. Running out of memory counts like a crash: a file should be rejected with an error, and a decoder that instead exhausts its host hands every program that opens untrusted images a denial of service. Pixels are compared as 16-bit RGBA with no color management; color under fully transparent pixels and the 8-bit reduction of 16-bit images are recorded as properties, not failures. Validators (pngcheck) are judged on a different question: whether each file conforms to the specification. Some files a decoder must still display do not conform, for example one with a chunk name the specification reserves.</p>
 <p>Two editions of the specification matter: the second (ISO/IEC 15948:2003; PNG 1.0 and 1.1 count as the second) and the third (W3C, 2025). A lens is an edition's text plus the extensions: the W3C registered extensions, Apple's iDOT, and under the second edition the chunks the third edition added (APNG, cICP, mDCV, cLLI, eXIf). Every result is rated through both lenses separately; each table has a checkbox per edition, and shows the ticked ones. There is no single verdict: following one edition rather than the other is not a defect. The two ratings differ only where the texts contradict each other, which they do in one place: a palette index past the end of PLTE is an error in the second edition and renders opaque black in the third.</p>
@@ -688,7 +696,6 @@ def render(report: dict) -> str:
 	if report["problems"]:
 		out.append("<p class=must>Suite consistency problems in this run:</p><ul>" + "".join(f"<li>{esc(p)}" for p in report["problems"]) + "</ul>")
 
-	out.append(disclaimer())
 	out.append(legend(report))
 	out.append(implementations_table(report, groups))
 	out.append(violations_table(report, groups))

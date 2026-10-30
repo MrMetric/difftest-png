@@ -1,17 +1,18 @@
 # difftest-png
 
-A small suite of PNG files, each built to test one rule of the PNG specification or one
-behavior on which some decoder deviates, and a script that runs it against every PNG decoder
-on your machine. The output answers "which PNG library should I use?" and "how reliable is my
-software?": a JSON report and a single self-contained HTML page.
+This project contains a suite of crafted PNG files built to test PNG readers against the specification and against each other. I hope it can help you answer the question, "Which PNG library should I use?", and "How reliable *is* my software, anyway?".
 
-The published run is at <https://wizardmaxx.ing/difftest-png/>.
+The report gets written to a JSON file which you can then convert to a single self-contained HTML document. My own run is up at <https://wizardmaxx.ing/difftest-png/>.
 
-## Human disclaimer
+The results likely contain errors, or decisions which can be argued with. Regardless, I did take quite a bit of care to make this meaningful, more than you'll see from the typical vibeslop project.
 
-The results likely contain errors, or decisions which can be argued with. Regardless, I did take greater-than-usual care to make this meaningful. The code is probably vibeslop, and I haven't read a single line. But, the decisions here came from several rounds of [Matt Pocock's grill-me Skill](https://github.com/mattpocock/skills) and at least four separate essays I wrote while trying to keep Claude Opus 5.5 on track, alongside several rounds of adversarial checking from GPT-6 Astra and from Claude Fable 5.1. I had to "push back" quite a lot to get past the AI's boneheaded decisions.
+The initial decisions here came from several rounds of [Matt Pocock's grill-me Skill](https://github.com/mattpocock/skills) and at least four separate essays I wrote while trying to keep Claude Opus 5.5 on track, alongside several rounds of adversarial checking from GPT-6 Astra and from Claude Fable 5.1. I had to "push back" quite a lot to get past the AI's boneheaded decisions.
+
+Further work mostly came from discussing things with Claude Fable 5.1, over several days and many sessions, and having him orchestrate Claude Opus 5.5 subagents for most implementation work.
 
 My conclusion: [Parsing PNGs is a Minefield](https://seriot.ch/security/parsing_json.html). A modern JSON comparison is coming Soon™, don't worry :)
+
+The rest of this document was written by AIs. Everything before this point was written by *me*, a flesh-and-blood human.
 
 ## Run it
 
