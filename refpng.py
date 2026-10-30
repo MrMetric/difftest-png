@@ -918,7 +918,16 @@ def _fctl(d: _State, f: Values) -> None:
 	d.apng.append(("fcTL", f.tuple(), d.idat_run > 0))
 
 def _fdat(d: _State, f: Values) -> None:
-	d.apng.append(("fdAT", f.sequence, True))
+	d.apng.append(("fdAT", f.sequence, True, f.stream))
+
+
+def _frame_stream(d: _State, seq: int, parts: list[bytes]) -> None:
+	"""11.3.6.3: a frame's zlib datastream is the concatenation of its fdAT chunks' frame data, structured like
+	IDAT's. One that does not inflate is an APNG fault; the static image stands."""
+	try:
+		inflate.zlib_decompress(b"".join(parts), StreamDiagnostics(d.diagnostics, f"frame {seq} data", ancillary="11.3.6.3#zlib"))
+	except inflate.InflateError:
+		d.reach("13.1#apng-fallback")
 
 def _apng_structure(d: _State) -> None:
 	"""4.9 and 11.3.6: the animation chunks taken together."""
@@ -967,18 +976,22 @@ def _apng_structure(d: _State) -> None:
 			d.reach("11.3.6.2#fctl")
 	# 11.3.6.3 "At least one fdAT chunk is required for each frame, except for the first frame, if that frame is
 	# represented by an IDAT chunk." An fdAT belongs to the fcTL before it.
-	current = None
+	current, parts = None, []
 	for e in d.apng + [("end",)]:
-		if e[0] in ("fcTL", "end") and current is not None and current[2] and not current[3]:
-			_apng_fault(d, "11.3.6.3#frame-data", f"frame with sequence number {current[1][0]} has no fdAT")
+		if e[0] in ("fcTL", "end") and current is not None and current[2]:
+			if not current[3]:
+				_apng_fault(d, "11.3.6.3#frame-data", f"frame with sequence number {current[1][0]} has no fdAT")
+			else:
+				_frame_stream(d, current[1][0], parts)
 		if e[0] == "fcTL":
-			current = [*e, False]
+			current, parts = [*e, False], []
 		elif e[0] == "fdAT":
 			# The fcTL before IDAT belongs to the static image, whose data is IDAT.
 			if current is None or not current[2]:
 				_apng_fault(d, "11.3.6.3#needs-fctl", f"fdAT {e[1]} has no preceding fcTL after IDAT")
 			else:
 				current[3] = True
+				parts.append(e[3])
 				d.reach("11.3.6.3#fdat")
 	# 4.9.2 "The first fcTL chunk shall contain sequence number 0, and the sequence numbers in the remaining fcTL
 	# and fdAT chunks shall be in ascending order, with no gaps or duplicates." 13.1 "Decoders shall treat

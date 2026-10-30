@@ -460,7 +460,9 @@ def expansion(test: dict, report: dict, classes: dict[str, str]) -> str:
 		exact = [b for b in test["buckets"] if b["digest"] == test["preferred"]]
 		others = max((b["count"] for b in test["buckets"] if b["digest"] != test["preferred"]), default=0)
 		matched = f"{exact[0]['count']} match" + ("" if exact[0]["count"] > others else ": " + esc(", ".join(exact[0]["columns"]))) if exact else "none match"
-		outs.append(f"<div>{thumb(test['preferred'], report['images'], classes)}<span>expected</span><span>{matched}</span></div>")
+		# For a file the lens says to reject, the generator may explain why decoders accept it.
+		why = f"<span>{esc(exact[0]['explanation'])}</span>" if exact and "explanation" in exact[0] else ""
+		outs.append(f"<div>{thumb(test['preferred'], report['images'], classes)}<span>expected</span>{why}<span>{matched}</span></div>")
 	for b in test["buckets"]:
 		if b["digest"] == test["preferred"]:
 			continue

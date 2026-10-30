@@ -41,6 +41,7 @@ import numpy as np
 
 import deflate as D
 import expect
+import pam
 import picture
 import pnglens
 import pngbuild as B
@@ -182,19 +183,32 @@ class Corpus:
 
 	def digest_of(self, data: bytes) -> str:
 		"""The digest of the pixels a file the reference displays shows: its preferred interpretation's."""
+		return self.digests_of(data)[0]
+
+	def digests_of(self, data: bytes) -> tuple[str, str | None]:
+		"""The digests of the pixels a file the reference displays shows (its preferred interpretation's), exact and
+		with the color under alpha 0 zeroed, the way some decoders hand pixels back; None when no pixel is transparent."""
 		tmp = self.scratch / "alt.png"
 		tmp.write_bytes(data)
 		r = expect.reading(tmp)
 		tmp.unlink()
 		assert r.interpretations and r.verdicts["3"].expectation == "display", "not a file the reference displays"
-		return pnglens.preferred(r.interpretations).digest
+		best = pnglens.preferred(r.interpretations)
+		clear = best.rgba[..., 3] == 0
+		if not clear.any():
+			return best.digest, None
+		zeroed = best.rgba.copy()
+		zeroed[clear, :3] = 0
+		d = pam.digest(zeroed)
+		return best.digest, d if d != best.digest else None  # the same pixels when the transparent ones are black already
 
 	def emit(self, name: str, data: bytes, expect3: str, clause: str, note: str, pixels: Variant | list | None = RGB8,
 			explain: dict[str, bytes] | None = None) -> expect.Reading:
 		"""Check the file against the reference and write it. `clause`: comma-joined clause ids the case is about,
 		or "". `pixels`: a Variant (its rgba16()), RGBA16 rows, or None for a file without reference pixels. `explain`:
 		what a decoder did when its output is wrong but explicable, as text -> a valid file whose pixels it then shows;
-		the manifest's `explains` column carries each one as digest:text, and the report labels a matching bucket with it."""
+		for a file the lens says to reject, it may explain the accepted output itself. The manifest's `explains` column
+		carries each one as digest:text, and the report labels a matching bucket with it."""
 		assert NAME.fullmatch(name), f"{name}: not a [a-z0-9.-]+ name"
 		assert name not in self.names, f"{name}: duplicate"
 		assert data not in self.contents, f"{name}: the same bytes as {self.contents.get(data)}"
@@ -230,10 +244,14 @@ class Corpus:
 		explains: dict[str, str] = {}
 		for text, alt in (explain or {}).items():
 			assert text and "|" not in text and "\t" not in text and "\n" not in text, (name, text)
-			digest = self.digest_of(alt)
-			assert digest not in {i.digest for i in r.interpretations}, f"{name}: explanation {text!r} is an interpretation of the file itself"
-			assert digest not in explains, f"{name}: explanations {text!r} and {explains[digest]!r} have the same pixels"
-			explains[digest] = text
+			exact, zeroed = self.digests_of(alt)
+			for digest, label in ((exact, text), (zeroed, f"{text}; color under alpha 0 zeroed")):
+				if digest is None:
+					continue
+				assert expect3 in ("must-reject", "may-reject") or digest not in {i.digest for i in r.interpretations}, \
+					f"{name}: explanation {text!r} is an interpretation of the file itself"
+				assert digest not in explains, f"{name}: explanations {label!r} and {explains[digest]!r} have the same pixels"
+				explains[digest] = label
 		kept = {"note": note, "about": clause, "family": self.family, "explains": "|".join(f"{d}:{t}" for d, t in explains.items())}
 		assert list(kept) == expect.KEPT
 		self.rows.append(row | kept)
@@ -389,9 +407,11 @@ def structure(c: Corpus) -> None:
 	c.emit("zlib-no-adler", zlib_png(z[:-4]), "may-reject", "10.1#zlib-check,rfc1950-2.2#end-in-adler32", "deflate complete, Adler-32 absent")
 	c.emit("idat-second-truncated", png(idats=[idat(z)], iend=None, trailer=struct.pack(">I", len(z)) + b"IDAT"), "may-reject", "13.1#end-of-stream",
 		"a complete IDAT, then the length and type of a second one and nothing more: the image is whole, the datastream is not")
-	c.emit("zlib-bad-adler", zlib_png(z[:-4] + bytes(4)), "must-reject", "rfc1950-2.3#adler32", "Adler-32 wrong, deflate data intact")
-	c.emit("zlib-bad-adler-own-idat", png(idats=[idat(z[:-4]), idat(bytes(4))]), "must-reject", "rfc1950-2.3#adler32",
-		"Adler-32 wrong, in its own IDAT after the data: a decoder that has every row before it reads the chunk may never check it")
+	c.emit("zlib-bad-adler-idat", zlib_png(z[:-4] + bytes(4)), "must-reject", "rfc1950-2.3#adler32",
+		"Adler-32 wrong, in the IDAT that holds the data: a decoder that inflates the chunk it has in hand reaches it")
+	c.emit("zlib-bad-adler-extra-idat", png(idats=[idat(z[:-4]), idat(bytes(4))]), "must-reject", "rfc1950-2.3#adler32",
+		"Adler-32 wrong, in an extra IDAT after the data: a decoder that has every row before it reads the chunk may never check it",
+		explain={"every row comes before the checksum, and a decoder that stops at the last row never checks it; libpng checks it and treats the mismatch as benign": png()})
 	co = zlib.compressobj(6)
 	c.emit("zlib-no-final-block", zlib_png(co.compress(raw0) + co.flush(zlib.Z_SYNC_FLUSH)), "may-reject", "10.1#zlib-check,rfc1951-3.2.3#end-of-input",
 		"all data in non-final blocks, then the stream stops (no BFINAL, no Adler-32)")
@@ -692,38 +712,51 @@ def trns(c: Corpus) -> None:
 	gray = Counter(s for row in samples(G8) for s in row).most_common(2)
 	(g_a,), (g_b,) = gray[0][0], gray[1][0]
 	c.emit("trns-len-1-gray", png(G8, before=[tr(bytes([g_a]))]), "recover", "11.3.1.1#length", "1-byte tRNS on grayscale (should be 2)", G8)
-	c.emit("trns-len-3-gray", png(G8, before=[tr(bytes([0, g_a, 0]))]), "recover", "11.3.1.1#length", "3-byte tRNS on grayscale", G8)
+	c.emit("trns-len-3-gray", png(G8, before=[tr(bytes([0, g_a, 0]))]), "recover", "11.3.1.1#length", "3-byte tRNS on grayscale", G8,
+		explain={f"the first two bytes taken as the gray value, so {g_a} is transparent": png(G8, before=[tr(trns_for((g_a,)))])})
 	c.emit("trns-len-4-rgb", png(before=[tr(bytes(4))]), "recover", "11.3.1.1#length", "4-byte tRNS on truecolor (should be 6)")
-	c.emit("trns-len-7-rgb", png(before=[tr(bytes(7))]), "recover", "11.3.1.1#length", "7-byte tRNS on truecolor")
+	c.emit("trns-len-7-rgb", png(before=[tr(bytes(7))]), "recover", "11.3.1.1#length", "7-byte tRNS on truecolor",
+		explain={"the first six bytes taken as the color, so black is transparent": png(before=[tr(trns_for((0, 0, 0)))])})
 	c.emit("trns-len-0-pal", png(P8, after_plte=[tr(b"")]), "display", "11.3.1.1#partial-palette", "zero-length tRNS on an indexed image: every entry stays opaque", P8)
 	c.emit("trns-longer-than-plte", png(p2, after_plte=[tr(b"\x00\x40\x80\xc0\xff\xff")]), "recover", "11.3.1.1#length",
-		"6 alpha values for a 4-entry palette", p2)
+		"6 alpha values for a 4-entry palette", p2,
+		explain={"the alpha values that have palette entries applied, the extra ones dropped": png(p2, after_plte=[tr(b"\x00\x40\x80\xc0")])})
 	c.emit("trns-in-graya", png(GA8, after_plte=[tr(b"\0\x80")]), "recover", "11.3.1.1#forbidden",
 		"tRNS in a grayscale+alpha image", GA8)
 	c.emit("trns-in-rgba", png(RGBA8, after_plte=[tr(b"\0\x80\0\x80\0\x80")]), "recover", "11.3.1.1#forbidden", "tRNS in a truecolor+alpha image", RGBA8)
+	applied = "the misplaced tRNS applied"
 	c.emit("trns-after-idat-gray", png(G8, after_idat=[tr(trns_for((g_a,)))]), "recover", "5.6#after-plte",
-		f"tRNS after IDAT on grayscale (value {g_a} is the commonest gray of the picture)", G8)
-	c.emit("trns-after-idat-pal", png(P8, after_idat=[tr(b"\0")]), "recover", "5.6#after-plte", "tRNS after IDAT on an indexed image", P8)
-	c.emit("trns-before-plte-pal", png(P8, before=[tr(b"\0")]), "recover", "5.6#after-plte", "tRNS before PLTE on an indexed image", P8)
+		f"tRNS after IDAT on grayscale (value {g_a} is the commonest gray of the picture)", G8, explain={applied: png(G8, before=[tr(trns_for((g_a,)))])})
+	c.emit("trns-after-idat-pal", png(P8, after_idat=[tr(b"\0")]), "recover", "5.6#after-plte", "tRNS after IDAT on an indexed image", P8,
+		explain={applied: png(P8, after_plte=[tr(b"\0")])})
+	c.emit("trns-before-plte-pal", png(P8, before=[tr(b"\0")]), "recover", "5.6#after-plte", "tRNS before PLTE on an indexed image", P8,
+		explain={applied: png(P8, after_plte=[tr(b"\0")])})
 	c.emit("trns-before-plte-rgb", png(before=[tr(trns_for(samples(RGB8)[0][0])), B.chunk(b"PLTE", plte_body(P8))]), "recover", "5.6#after-plte",
-		"tRNS naming the top-left pixel's color, then a suggested palette, on a truecolor image: tRNS is before PLTE", pixels(RGB8, trns=trns_for(samples(RGB8)[0][0])))
+		"tRNS naming the top-left pixel's color, then a suggested palette, on a truecolor image: tRNS is before PLTE", pixels(RGB8, trns=trns_for(samples(RGB8)[0][0])),
+		explain={"the misplaced tRNS ignored": png()})
 	c.emit("trns-dup-gray", png(G8, before=[tr(trns_for((g_a,))), tr(trns_for((g_b,)))]), "recover", "5.6#single-ancillary",
-		f"two tRNS chunks naming the picture's two commonest grays, {g_a} and {g_b}; expected pixels: the first applied", pixels(G8, trns=trns_for((g_a,))))
+		f"two tRNS chunks naming the picture's two commonest grays, {g_a} and {g_b}; expected pixels: the first applied", pixels(G8, trns=trns_for((g_a,))),
+		explain={"neither tRNS applied": png(G8)})
 	g4, g1, g2 = TAGS["g4"], TAGS["g1"], TAGS["g2"]
 	(v4,) = mid(g4)
-	for name, v, value, masked, what in (
-			("trns-g4-highbits", g4, 0xF0 | v4, v4, f"4-bit gray, tRNS 0x{0xF0 | v4:04X}: masked to 0x{v4:X}"),
-			("trns-g4-highbyte", g4, 0x100 | v4, v4, f"4-bit gray, tRNS 0x{0x100 | v4:04X}: masked to 0x{v4:X}"),
-			("trns-g8-highbyte", G8, 0x100 | g_a, g_a, f"8-bit gray, tRNS 0x{0x100 | g_a:04X}: masked to 0x{g_a:02X}"),
-			("trns-g1-value-2", g1, 2, 0, "1-bit gray, tRNS 0x0002: masked to 0, so black is transparent (not 'nonzero means white')"),
-			("trns-g1-value-3", g1, 3, 1, "1-bit gray, tRNS 0x0003: masked to 1, white transparent"),
-			("trns-g2-value-5", g2, 5, 1, "2-bit gray, tRNS 5: masked to 1")):
+	unmasked = "tRNS compared without masking: nothing matches, nothing is transparent"
+	for name, v, value, masked, what, more in (
+			("trns-g4-highbits", g4, 0xF0 | v4, v4, f"4-bit gray, tRNS 0x{0xF0 | v4:04X}: masked to 0x{v4:X}", {}),
+			("trns-g4-highbyte", g4, 0x100 | v4, v4, f"4-bit gray, tRNS 0x{0x100 | v4:04X}: masked to 0x{v4:X}", {}),
+			("trns-g8-highbyte", G8, 0x100 | g_a, g_a, f"8-bit gray, tRNS 0x{0x100 | g_a:04X}: masked to 0x{g_a:02X}", {}),
+			("trns-g1-value-2", g1, 2, 0, "1-bit gray, tRNS 0x0002: masked to 0, so black is transparent (not 'nonzero means white')",
+				{"a nonzero tRNS value taken as white, so white is transparent": png(g1, before=[tr(trns_for((1,)))])}),
+			("trns-g1-value-3", g1, 3, 1, "1-bit gray, tRNS 0x0003: masked to 1, white transparent",
+				{"a tRNS value other than 1 taken as black, so black is transparent": png(g1, before=[tr(trns_for((0,)))])}),
+			("trns-g2-value-5", g2, 5, 1, "2-bit gray, tRNS 5: masked to 1", {})):
 		assert occurs(v, (masked,)), (name, masked)
-		c.emit(name, png(v, before=[tr(trns_for((value,)))]), "display", "11.3.1.1#mask", what, pixels(v, trns=trns_for((value,))))
+		c.emit(name, png(v, before=[tr(trns_for((value,)))]), "display", "11.3.1.1#mask", what, pixels(v, trns=trns_for((value,))),
+			explain={unmasked: png(v)} | more)
 	(r0, g0, b0), = samples(crop(RGB8, 1, 1))[0]
 	body = trns_for((0x100 | r0, 0x100 | g0, 0x100 | b0))
 	c.emit("trns-rgb8-highbyte", png(before=[tr(body)]), "display", "11.3.1.1#mask",
-		"8-bit RGB, tRNS with a set high byte in each sample: masked, the top-left pixel's color transparent", pixels(RGB8, trns=body))
+		"8-bit RGB, tRNS with a set high byte in each sample: masked, the top-left pixel's color transparent", pixels(RGB8, trns=body),
+		explain={unmasked: png()})
 	for name, v, what in (("trns-rgb8-1x1", crop(RGB8, 1, 1), "1x1 truecolor with a tRNS naming its only pixel"),
 			("trns-rgb8-2x1", crop(RGB8, 2, 1), "2x1 truecolor with a tRNS naming its pixels' color: fewer pixels than tRNS samples"),
 			("trns-rgb16-1x1", crop(RGB16, 1, 1), "1x1 16-bit truecolor with tRNS naming its pixel")):
@@ -900,6 +933,8 @@ def ancillary(c: Corpus) -> None:
 		("itxt-flag-2", on(ch(b"iTXt", b"Comment\0\x02\0\0\0text")), "recover", "11.3.3.4#flag", "iTXt compression flag 2", RGB8),
 		("itxt-method-1", on(ch(b"iTXt", b"Comment\0\x01\x01\0\0" + zlib.compress(b"text"))), "recover", "11.3.3.4#method", "iTXt compressed with method 1", RGB8),
 		("itxt-bad-zlib", on(ch(b"iTXt", b"Comment\0\x01\0\0\0\xff\xff\xff\xff")), "recover", "11.3.3.4#zlib", "iTXt compressed flag set, garbage stream", RGB8),
+		("itxt-bad-adler", on(ch(b"iTXt", b"Comment\0\x01\0\0\0" + zlib.compress(b"hello")[:-4] + bytes(4))), "recover", "11.3.3.4#zlib",
+			"iTXt compressed, with a wrong Adler-32", RGB8),
 		("itxt-truncated", on(ch(b"iTXt", b"Comment\0")), "recover", "11.3.3.4#separators", "iTXt ending after the keyword", RGB8),
 		("itxt-bad-utf8", on(ch(b"iTXt", b"Comment\0\0\0en\0\xff\xfe\0\xc0\xc0")), "recover", "11.3.3.4#utf8", "iTXt whose text is not UTF-8", RGB8),
 		("itxt-language-numeric", on(ch(b"iTXt", b"Comment\0\0\0" + b"123" + b"\0\0text")), "recover", "11.3.3.4#language",
@@ -938,6 +973,7 @@ def ancillary(c: Corpus) -> None:
 		("iccp-profile-garbage", on(ch(b"iCCP", b"p\0\0" + zlib.compress(b"not an ICC profile" * 10))), "recover", "11.3.2.3#profile",
 			"iCCP whose profile is not an ICC profile", RGB8),
 		("iccp-bad-zlib-header", on(ch(b"iCCP", b"p\0\0\xff\xff" + prof[2:])), "recover", "11.3.2.3#zlib", "iCCP whose zlib header is invalid", RGB8),
+		("iccp-bad-adler", on(ch(b"iCCP", b"p\0\0" + prof[:-4] + bytes(4))), "recover", "11.3.2.3#zlib", "iCCP with a wrong Adler-32", RGB8),
 		("iccp-truncated-zlib", on(ch(b"iCCP", b"p\0\0" + prof[:len(prof) // 2])), "recover", "11.3.2.3#zlib", "iCCP whose zlib stream stops halfway", RGB8),
 		("iccp-after-plte", pal(ch(b"iCCP", b"p\0\0" + prof)), "recover", "5.6#before-plte", "iCCP after PLTE", P8),
 		("iccp-dup", on(ch(b"iCCP", b"p\0\0" + prof), ch(b"iCCP", b"q\0\0" + prof)), "recover", "5.6#single-ancillary", "two iCCP chunks", RGB8),
@@ -1149,6 +1185,8 @@ def apng(c: Corpus) -> None:
 		"11.3.6.2#region", f"frame 2 is 6x7 at (9, 10): past the right and bottom edges", RGBA8)
 	c.emit("apng-frame-zero-size", png(RGBA8, before=[actl(2), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, 0, 7, 3, 4), fdat(2, zlib.compress(b""))]),
 		"recover", "11.3.6.2#dimensions", f"frame 2's fcTL has width 0, its fdAT an empty zlib stream", RGBA8)
+	c.emit("apng-fdat-bad-adler", png(RGBA8, before=[actl(2), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, *FRAME2), fdat(2, z[:-4] + bytes(4))]),
+		"recover", "11.3.6.3#zlib", "as apng-idat-is-frame, with frame 2's Adler-32 wrong: a decoder that inflates frames it never shows reaches it", RGBA8)
 	# A 4-byte fdAT (sequence number, no data) is a legal empty piece of frame data to the reference; 3 bytes cannot hold
 	# the sequence number. The frame's real fdAT follows, so the short chunk is the file's one fault.
 	c.emit("apng-fdat-empty", png(RGBA8, before=[actl(2), fctl(0, W, H, 0, 0)], after_idat=[fctl(1, *FRAME2), B.chunk(b"fdAT", bytes(3)), fdat(2, z)]),

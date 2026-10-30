@@ -354,3 +354,7 @@ The human disclaimer is written in the README, and the report copies it from the
   index and an ICC profile that maps black elsewhere, to show where the substitution happens.
 - The fourth edition, now a W3C editor's draft: what it changes for decoders, and whether it
   should get its own set of expectations.
+- A real-world lens the reader configures, switch by switch, beside the two editions. Its
+  defaults so far: a tRNS longer than the palette passes whether a decoder ignores the chunk or
+  applies the entries that have palette slots; HDIST 31 and 32 stay violations, since a valid
+  file rejected is a valid file rejected whoever's inflate did it.
